@@ -1,0 +1,26 @@
+[project]
+name = "remarkable-mcp"
+version = "0.1.0"
+description = "MCP server for reMarkable tablet document rendering"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=2.0",
+    "cairosvg>=2.8.2",
+    "pypdf>=6.7.0",
+    "rmc>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: Unit tests (no network, no real cache)",
+    "integration: Integration tests (tool registration)",
+    "e2e: End-to-end tests (stdio subprocess)",
+]

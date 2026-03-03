@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "remarkable": {
+      "type": "stdio",
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "export DYLD_LIBRARY_PATH=/opt/homebrew/lib; exec uv --directory '/path/to/remarkable-mcp' run server.py"
+      ]
+    }
+  }
+}
