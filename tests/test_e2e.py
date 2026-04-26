@@ -2,8 +2,8 @@
 # ABOUTME: Sends JSON-RPC messages over stdin/stdout to verify the full transport layer.
 
 import json
-import subprocess
 import os
+import subprocess
 
 import pytest
 
@@ -24,9 +24,9 @@ def _send_jsonrpc(proc, method, params=None, request_id=1):
 
 
 def _start_server():
-    """Start the MCP server as a subprocess."""
+    """Start the MCP server as a subprocess via the package entry point."""
     return subprocess.Popen(
-        ["uv", "run", "server.py"],
+        ["uv", "run", "remarkable-mcp"],
         cwd=SERVER_DIR,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -82,11 +82,12 @@ class TestE2EStdio:
             tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
             assert "remarkable_check_status" in tool_names
             assert "remarkable_list_documents" in tool_names
+            assert "remarkable_list_folders" in tool_names
             assert "remarkable_render_pages" in tool_names
             assert "remarkable_render_document" in tool_names
             assert "remarkable_get_document_info" in tool_names
             assert "remarkable_cleanup_renders" in tool_names
-            assert len(tool_names) == 6
+            assert len(tool_names) == 7
         finally:
             proc.terminate()
             proc.wait()

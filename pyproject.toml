@@ -1,21 +1,33 @@
 [project]
-name = "remarkable-mcp"
+name = "remarkable-mcp-redux"
 version = "0.1.0"
 description = "MCP server for reMarkable tablet document rendering"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
-    "fastmcp>=2.0",
-    "cairosvg>=2.8.2",
-    "pypdf>=6.7.0",
+    "fastmcp>=2.14.7",
+    "cairosvg>=2.9.0",
+    "pypdf>=6.10.2",
     "rmc>=0.3.0",
+    "pydantic>=2.13.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.11.0",
 ]
+
+[project.scripts]
+remarkable-mcp = "remarkable_mcp_redux.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["remarkable_mcp_redux"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -23,4 +35,24 @@ markers = [
     "unit: Unit tests (no network, no real cache)",
     "integration: Integration tests (tool registration)",
     "e2e: End-to-end tests (stdio subprocess)",
+]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors (spacing, indentation, line length)
+    "F",    # pyflakes (undefined names, unused imports/variables)
+    "I",    # isort (import ordering)
+    "B",    # flake8-bugbear (common bug patterns, mutable defaults, loop variable capture)
+    "UP",   # pyupgrade (modernize syntax for target Python version)
+    "N",    # pep8-naming (class, function, variable naming conventions)
+    "RUF",  # ruff-specific rules (miscellaneous opinionated checks)
+    "C4",   # flake8-comprehensions (simplify list/dict/set comprehensions)
+    "SIM",  # flake8-simplify (simplify if/else, return, with statements)
 ]

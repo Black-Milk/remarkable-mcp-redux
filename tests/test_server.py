@@ -1,13 +1,14 @@
 # ABOUTME: Integration tests for the MCP server tool registration and response shapes.
-# ABOUTME: Verifies all 6 tools are registered and return expected dict structures.
+# ABOUTME: Verifies tools are registered (with the write-tool opt-in) and return expected shapes.
 
 import pytest
 
-from server import mcp, client
-
+from remarkable_mcp_redux.config import WRITE_TOOLS_ENV_VAR
+from remarkable_mcp_redux.server import build_server, client, mcp
 
 EXPECTED_TOOLS = [
     "remarkable_list_documents",
+    "remarkable_list_folders",
     "remarkable_get_document_info",
     "remarkable_render_pages",
     "remarkable_render_document",
@@ -19,7 +20,7 @@ EXPECTED_TOOLS = [
 class TestToolRegistration:
     @pytest.mark.integration
     def test_server_has_all_tools(self):
-        """All 6 tools should be registered on the MCP server."""
+        """All read-only tools should be registered on the MCP server."""
         tools = mcp._tool_manager._tools
         tool_names = set(tools.keys())
         for name in EXPECTED_TOOLS:
@@ -27,9 +28,9 @@ class TestToolRegistration:
 
     @pytest.mark.integration
     def test_tool_count(self):
-        """Server should have exactly 6 tools."""
+        """Server should have exactly len(EXPECTED_TOOLS) read-only tools."""
         tools = mcp._tool_manager._tools
-        assert len(tools) == 6
+        assert len(tools) == len(EXPECTED_TOOLS)
 
 
 class TestToolResponseShapes:
@@ -64,3 +65,39 @@ class TestToolResponseShapes:
         result = client.cleanup_renders()
         assert "files_removed" in result
         assert "bytes_freed" in result
+
+    @pytest.mark.integration
+    def test_list_folders_shape(self):
+        """remarkable_list_folders should return folders list and count."""
+        result = client.list_folders()
+        assert "folders" in result
+        assert "count" in result
+        assert isinstance(result["folders"], list)
+
+
+class TestWriteToolGating:
+    @pytest.mark.integration
+    def test_write_tools_disabled_by_default(self, monkeypatch):
+        """Without REMARKABLE_ENABLE_WRITE_TOOLS, write tools must not register."""
+        monkeypatch.delenv(WRITE_TOOLS_ENV_VAR, raising=False)
+        app, _ = build_server()
+        tool_names = set(app._tool_manager._tools.keys())
+        assert "remarkable_rename_document" not in tool_names
+        assert "remarkable_move_document" not in tool_names
+
+    @pytest.mark.integration
+    def test_write_tools_register_when_enabled(self, monkeypatch):
+        """When the env flag is truthy, write tools must register."""
+        monkeypatch.setenv(WRITE_TOOLS_ENV_VAR, "true")
+        app, _ = build_server()
+        tool_names = set(app._tool_manager._tools.keys())
+        assert "remarkable_rename_document" in tool_names
+        assert "remarkable_move_document" in tool_names
+
+    @pytest.mark.integration
+    def test_falsy_env_keeps_write_tools_disabled(self, monkeypatch):
+        """A non-truthy value should still leave write tools off."""
+        monkeypatch.setenv(WRITE_TOOLS_ENV_VAR, "no")
+        app, _ = build_server()
+        tool_names = set(app._tool_manager._tools.keys())
+        assert "remarkable_rename_document" not in tool_names

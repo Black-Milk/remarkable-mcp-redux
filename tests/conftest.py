@@ -1,95 +1,94 @@
 # ABOUTME: Shared pytest fixtures for remarkable-mcp tests.
-# ABOUTME: Provides synthetic reMarkable cache directories and helper factories.
+# ABOUTME: Provides synthetic reMarkable cache directories, folders, and helper factories.
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
+# Folder UUIDs used by fixtures (kept stable so tests can refer to them by id)
+WORK_FOLDER_ID = "ffff-folder-work"
+PERSONAL_FOLDER_ID = "ffff-folder-personal"
+
 
 @pytest.fixture
 def fake_cache(tmp_path):
-    """Create a synthetic reMarkable cache directory with sample documents.
+    """Create a synthetic reMarkable cache directory with sample documents and folders.
 
     Layout mirrors the real cache:
-      <base>/<doc_id>.metadata   — JSON with visibleName, lastModified, type, parent
-      <base>/<doc_id>.content    — JSON with page IDs (v1 or v2 format)
-      <base>/<doc_id>/<page>.rm  — binary .rm stub files
+      <base>/<doc_id>.metadata   - JSON with type, visibleName, parent, lastModified, ...
+      <base>/<doc_id>.content    - JSON with fileType, documentMetadata, tags, pages, ...
+      <base>/<doc_id>/<page>.rm  - binary .rm stub files (DocumentType only)
+
+    Documents:
+      Morning Journal      - notebook, no embedded title, has user tag
+      Architecture Sketch  - PDF with embedded title and authors, annotated
+      Empty Notebook       - notebook with one page id but no .rm files
+
+    Folders:
+      Work                 - root folder
+      Personal             - root folder
     """
-    # Document 1: v2 format, 3 pages
-    doc1_id = "aaaa-1111-2222-3333"
+    _create_folder(
+        tmp_path,
+        folder_id=WORK_FOLDER_ID,
+        name="Work",
+        parent="",
+        last_modified="1709500000000",
+    )
+    _create_folder(
+        tmp_path,
+        folder_id=PERSONAL_FOLDER_ID,
+        name="Personal",
+        parent="",
+        last_modified="1709400000000",
+    )
+
     _create_document(
         tmp_path,
-        doc1_id,
+        doc_id="aaaa-1111-2222-3333",
         name="Morning Journal",
         page_ids=["page-a1", "page-a2", "page-a3"],
         content_format="v2",
-        last_modified="1709500000",
+        last_modified="1709500000000",
+        file_type="notebook",
+        tags=["Journal"],
+        extra_metadata={"LastTool": "Ballpointv2"},
+        original_page_count=-1,
+        size_in_bytes="2140",
     )
 
-    # Document 2: v1 format, 2 pages
-    doc2_id = "bbbb-4444-5555-6666"
     _create_document(
         tmp_path,
-        doc2_id,
+        doc_id="bbbb-4444-5555-6666",
         name="Architecture Sketch",
         page_ids=["page-b1", "page-b2"],
         content_format="v1",
-        last_modified="1709400000",
+        last_modified="1709400000000",
+        parent=WORK_FOLDER_ID,
+        file_type="pdf",
+        document_title="Software Architecture Patterns",
+        authors=["Mark Richards"],
+        tags=["Reference", "Architecture"],
+        extra_metadata={"LastTool": "Finelinerv2"},
+        original_page_count=42,
+        size_in_bytes="123456",
     )
 
-    # Document 3: v2 format, 1 page, no .rm file (blank page)
-    doc3_id = "cccc-7777-8888-9999"
     _create_document(
         tmp_path,
-        doc3_id,
+        doc_id="cccc-7777-8888-9999",
         name="Empty Notebook",
         page_ids=["page-c1"],
         content_format="v2",
-        last_modified="1709300000",
+        last_modified="1709300000000",
         create_rm_files=False,
+        file_type="notebook",
+        original_page_count=-1,
+        size_in_bytes="0",
     )
 
     return tmp_path
-
-
-def _create_document(
-    base_path,
-    doc_id,
-    name,
-    page_ids,
-    content_format="v2",
-    last_modified="1709500000",
-    create_rm_files=True,
-):
-    """Helper to create a synthetic reMarkable document in the cache."""
-    # Write .metadata
-    metadata = {
-        "visibleName": name,
-        "lastModified": last_modified,
-        "type": "DocumentType",
-        "parent": "",
-    }
-    meta_path = base_path / f"{doc_id}.metadata"
-    meta_path.write_text(json.dumps(metadata))
-
-    # Write .content
-    if content_format == "v1":
-        content = {"pages": page_ids}
-    else:
-        content = {"cPages": {"pages": [{"id": pid} for pid in page_ids]}}
-    content_path = base_path / f"{doc_id}.content"
-    content_path.write_text(json.dumps(content))
-
-    # Create document directory with .rm stub files
-    doc_dir = base_path / doc_id
-    doc_dir.mkdir(exist_ok=True)
-    if create_rm_files:
-        for pid in page_ids:
-            rm_file = doc_dir / f"{pid}.rm"
-            # Write minimal bytes so the file exists (not valid .rm but enough for unit tests)
-            rm_file.write_bytes(b"\x00" * 64)
 
 
 @pytest.fixture
@@ -104,3 +103,123 @@ def render_dir(tmp_path):
 def empty_cache(tmp_path):
     """Provide an empty directory (no documents)."""
     return tmp_path / "empty"
+
+
+@pytest.fixture
+def ios_doc_cache(tmp_path):
+    """Cache containing a single iOS-sourced document missing optional metadata fields."""
+    metadata = {
+        "type": "DocumentType",
+        "visibleName": "iOS Transfer",
+        "parent": "",
+        "lastModified": "1777124918407",
+        "createdTime": "1777124918411",
+        "lastOpened": "0",
+        "lastOpenedPage": 0,
+        "new": False,
+        "pinned": False,
+        "source": "com.remarkable.ios",
+    }
+    doc_id = "ios-aaaa-1111"
+    (tmp_path / f"{doc_id}.metadata").write_text(json.dumps(metadata))
+    content = {
+        "fileType": "pdf",
+        "formatVersion": 1,
+        "pages": ["ios-page-1"],
+        "pageCount": 1,
+        "originalPageCount": 1,
+        "sizeInBytes": "1024",
+        "documentMetadata": {},
+        "extraMetadata": {},
+        "tags": [],
+    }
+    (tmp_path / f"{doc_id}.content").write_text(json.dumps(content))
+    doc_dir = tmp_path / doc_id
+    doc_dir.mkdir(exist_ok=True)
+    (doc_dir / "ios-page-1.rm").write_bytes(b"\x00" * 64)
+    return tmp_path
+
+
+def _create_folder(
+    base_path: Path,
+    folder_id: str,
+    name: str,
+    parent: str = "",
+    last_modified: str = "1709500000000",
+) -> None:
+    """Helper to create a synthetic CollectionType folder record."""
+    metadata = {
+        "type": "CollectionType",
+        "visibleName": name,
+        "parent": parent,
+        "lastModified": last_modified,
+        "deleted": False,
+        "pinned": False,
+        "metadatamodified": False,
+        "modified": False,
+        "synced": True,
+        "version": 1,
+    }
+    (base_path / f"{folder_id}.metadata").write_text(json.dumps(metadata))
+
+
+def _create_document(
+    base_path: Path,
+    doc_id: str,
+    name: str,
+    page_ids: list[str],
+    content_format: str = "v2",
+    last_modified: str = "1709500000000",
+    create_rm_files: bool = True,
+    parent: str = "",
+    file_type: str = "notebook",
+    document_title: str | None = None,
+    authors: list[str] | None = None,
+    tags: list[str] | None = None,
+    extra_metadata: dict | None = None,
+    original_page_count: int = -1,
+    size_in_bytes: str = "0",
+) -> None:
+    """Helper to create a synthetic DocumentType record with .metadata and .content files."""
+    metadata = {
+        "type": "DocumentType",
+        "visibleName": name,
+        "parent": parent,
+        "lastModified": last_modified,
+        "deleted": False,
+        "metadatamodified": False,
+        "modified": False,
+        "pinned": False,
+        "synced": True,
+        "version": 1,
+    }
+    (base_path / f"{doc_id}.metadata").write_text(json.dumps(metadata))
+
+    document_metadata: dict = {}
+    if document_title is not None:
+        document_metadata["title"] = document_title
+    if authors:
+        document_metadata["authors"] = authors
+
+    content: dict = {
+        "fileType": file_type,
+        "documentMetadata": document_metadata,
+        "extraMetadata": extra_metadata or {},
+        "tags": [{"name": t, "timestamp": 0} for t in (tags or [])],
+        "pageCount": len(page_ids),
+        "originalPageCount": original_page_count,
+        "sizeInBytes": size_in_bytes,
+    }
+    if content_format == "v1":
+        content["pages"] = page_ids
+        content["formatVersion"] = 1
+    else:
+        content["cPages"] = {"pages": [{"id": pid} for pid in page_ids]}
+        content["formatVersion"] = 2
+    (base_path / f"{doc_id}.content").write_text(json.dumps(content))
+
+    doc_dir = base_path / doc_id
+    doc_dir.mkdir(exist_ok=True)
+    if create_rm_files:
+        for pid in page_ids:
+            (doc_dir / f"{pid}.rm").write_bytes(b"\x00" * 64)
