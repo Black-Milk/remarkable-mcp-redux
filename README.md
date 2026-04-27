@@ -120,7 +120,7 @@ relocate anything in the render directory.
 
 - **reMarkable desktop app** — installed and synced ([download](https://remarkable.com/desktop))
 - **macOS** — the server reads from the standard macOS cache path (Linux support is possible but untested)
-- **Python 3.12+**
+- **Python 3.13+**
 - **uv** — Python package manager ([install](https://docs.astral.sh/uv/))
 - **cairo** — system graphics library for SVG→PDF rendering:
   ```bash
@@ -130,7 +130,8 @@ relocate anything in the render directory.
 ## Installation
 
 ```bash
-git clone https://github.com/<your-username>/remarkable-mcp-redux.git
+uv python install 3.13
+git clone https://github.com/Black-Milk/remarkable-mcp-redux.git
 cd remarkable-mcp-redux
 uv sync
 ```

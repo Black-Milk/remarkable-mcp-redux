@@ -5,7 +5,7 @@
       "command": "/bin/bash",
       "args": [
         "-c",
-        "export DYLD_LIBRARY_PATH=/opt/homebrew/lib; exec uv --directory '/path/to/remarkable-mcp' run server.py"
+        "cd '/path/to/remarkable-mcp-redux' && exec uv run remarkable-mcp"
       ]
     }
   }
