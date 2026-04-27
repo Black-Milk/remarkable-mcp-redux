@@ -6,9 +6,9 @@ import sys
 
 from fastmcp import FastMCP
 
+from ._tools import register_tools
 from .client import RemarkableClient
 from .config import ensure_cairo_library_path
-from .tools import register_tools
 
 ensure_cairo_library_path()
 

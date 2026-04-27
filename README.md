@@ -205,16 +205,16 @@ remarkable-mcp-redux/
 │   ├── __init__.py
 │   ├── config.py                   # Default paths, env-flag helpers, retention, Cairo setup
 │   ├── schemas.py                  # Pydantic models for .metadata and .content JSON
-│   ├── cache.py                    # Read-only cache loader (parses raw JSON via schemas)
+│   ├── _cache.py                   # Read-only cache loader (parses raw JSON via schemas)
 │   │                               # - is_descendant_of / count_descendants for cycle safety
-│   ├── render.py                   # rmc → SVG → cairosvg → PDF pipeline
-│   ├── writes.py                   # Atomic, backup-protected mutations:
+│   ├── _render.py                  # rmc → SVG → cairosvg → PDF pipeline
+│   ├── _writes.py                  # Atomic, backup-protected mutations:
 │   │                               # - MetadataWriter (rename / move / pin)
 │   │                               # - MetadataRestorer (undo from latest backup)
 │   │                               # - MetadataCreator (folder creation)
 │   │                               # - cleanup_backups (bulk pruning helper)
-│   ├── client.py                   # RemarkableClient facade
-│   ├── tools.py                    # MCP tool registration (read + opt-in write)
+│   ├── client.py                   # RemarkableClient facade (public API)
+│   ├── _tools.py                   # MCP tool registration (read + opt-in write)
 │   └── server.py                   # FastMCP entry point + build_server()
 ├── skills/
 │   ├── remarkable-transcribe.md    # Handwriting → Markdown skill
