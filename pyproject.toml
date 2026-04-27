@@ -1,7 +1,7 @@
 [project]
 name = "remarkable-mcp-redux"
 version = "0.1.0"
-description = "MCP server for reMarkable tablet document rendering"
+description = "MCP server for reMarkable tablet organization via local cache"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
