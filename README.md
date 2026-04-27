@@ -48,21 +48,102 @@ files it produces.
 ### The cache mental model
 
 The desktop cache is **not** a tree of folders on disk. It is a flat directory
-of records, each addressed by a UUID. For every document or folder you have,
-the cache stores a few sibling files keyed by that id:
+of records, each addressed by a UUID. Every document or folder you have
+materialises as a fixed family of siblings (and a few child directories) keyed
+by the same `<id>`:
 
-- `<id>.metadata` — a small JSON blob with `visibleName`, `parent`, `type`
-  (`DocumentType` or `CollectionType`), `lastModified`, `deleted`, `pinned`,
-  and the sync flags (`metadatamodified`, `modified`).
-- `<id>.content` — structural info: `fileType` (`pdf`, `notebook`, `epub`),
-  page index, tags, original page count, embedded title/authors, size.
-- `<id>/...` — per-page data used for rendering (notebook pages live here as
-  `.rm` files alongside any source assets).
+```
+<cache_root>/
+├── <id>.metadata          # JSON: visibleName, parent, type, sync flags, lastModified, ...
+├── <id>.content           # JSON: fileType, page index, tags, embedded title, ...
+├── <id>.local             # JSON: per-device-only state (sync flags, etc.)
+├── <id>.pagedata          # text: per-page template names (one line per page)
+├── <id>.pdf               # source PDF                       [fileType=pdf]
+├── <id>.epub              # source EPUB                      [fileType=epub]
+├── <id>.epubindex         # binary EPUB pagination index     [fileType=epub]
+├── <id>.docx              # source DOCX                      [rare]
+├── <id>.md                # source markdown                  [rare]
+├── <id>/                  # per-page handwritten artifacts (annotated pages only)
+│   ├── <page_uuid>.rm                # vector strokes (v6 binary; v5 on legacy docs)
+│   └── <page_uuid>-metadata.json     # per-page metadata
+├── <id>.thumbnails/       # cached page thumbnails           (PNG per page_uuid)
+├── <id>.highlights/       # selection highlights on PDF/EPUB (JSON per page_uuid)
+└── <id>.textconversion/   # handwriting OCR results          (JSON per page_uuid)
+```
+
+**Always present (one per record):**
+
+- **`<id>.metadata`** — the small JSON record that names and locates a
+  document or folder in the user's library. Carries `visibleName`, `parent`
+  (UUID of the containing folder, `""` for the root, or `"trash"`), `type`
+  (`"DocumentType"` or `"CollectionType"`), `lastModified` (Unix-epoch
+  milliseconds as a decimal string), `pinned`, `deleted`, and the sync
+  bookkeeping flags (`metadatamodified`, `modified`, `synced`, `version`).
+  Documents additionally carry `createdTime`, `lastOpened`, `lastOpenedPage`,
+  `new`, and `source`.
+- **`<id>.content`** — the JSON record that describes the document's content
+  shape. Carries `fileType` (`"pdf"`, `"epub"`, `"notebook"`, or `""`), the
+  page index in either v1 form (`pages`: a flat list of UUIDs) or v2 form
+  (`cPages.pages[].id`), `pageCount`, `originalPageCount`, user-applied
+  `tags` (and per-page `pageTags`), embedded `documentMetadata` (PDF/EPUB
+  title and authors), `extraMetadata` (presence of which signals "this
+  notebook has annotations"), `sizeInBytes`, and the per-document
+  `formatVersion`.
+- **`<id>.local`** — JSON of per-device-only state that should not roam to
+  the cloud (local sync flags, edit-in-progress markers, etc.). Not
+  consulted by this server.
+- **`<id>.pagedata`** — plaintext, one template name per line in page-index
+  order (e.g. `Blank`, `Lined`, `Blank`, …). Tells the device which
+  background template is selected for each page of a notebook.
+
+**Source asset (presence depends on `fileType`):**
+
+- **`<id>.pdf`** — the original PDF the user imported (`fileType: "pdf"`),
+  stored verbatim. This server uses it as the rendering substrate when a
+  page has no `.rm` annotations (the `pdf_passthrough` source); a future
+  follow-up will use it as the base layer when compositing strokes onto an
+  annotated PDF.
+- **`<id>.epub`** — the original EPUB the user imported
+  (`fileType: "epub"`), stored verbatim.
+- **`<id>.epubindex`** — a binary index reMarkable derives from the EPUB to
+  drive its dynamic pagination and reflow. Lives next to the `.epub` and is
+  regenerated on demand by the device.
+- **`<id>.docx`** — original DOCX, when an imported document was a Word
+  file. Rare in practice; reMarkable converts most DOCX uploads to other
+  formats on import.
+- **`<id>.md`** — source markdown for documents that originated as plain
+  text. Rare.
+
+**Per-page artifacts (one entry per `page_uuid`):**
+
+- **`<id>/`** — the only `<id>...` directory whose contents this server
+  reads. Holds up to two files per *annotated* page:
+  - **`<page_uuid>.rm`** — the page's vector strokes in reMarkable's binary
+    "lines" format. `version=6` on current firmware; `version=5` on legacy
+    documents (currently surfaced by the renderer as the structured failure
+    code `v5_unsupported`). Pages with no annotations have no `.rm` file at
+    all.
+  - **`<page_uuid>-metadata.json`** — small JSON with per-page bookkeeping
+    (layer names and visibility, transform, etc.) used by the device's page
+    editor.
+- **`<id>.thumbnails/`** — PNG thumbnails generated by the desktop app, one
+  per `<page_uuid>`. Used in the library/grid view; not authoritative
+  renders, just a low-resolution cache.
+- **`<id>.highlights/`** — JSON per `<page_uuid>` describing text/region
+  selections on PDFs and EPUBs (highlight color, anchor offsets, captured
+  text). Independent of `.rm` strokes.
+- **`<id>.textconversion/`** — JSON per `<page_uuid>` containing the
+  handwriting OCR result (recognised text, per-line/per-stroke spans).
+  Populated only after the user runs "Convert to Text" on the device.
 
 Folders are records too. A folder is a `.metadata` file with
 `type: "CollectionType"`, and "X is inside folder Y" is expressed by X's
 `parent` field pointing at Y's id. The empty string `""` means the root;
 `"trash"` is a sentinel for the trash bin.
+
+This server only reads the four files it needs to render and reason about
+documents — `<id>.metadata`, `<id>.content`, `<id>.pdf`, and
+`<id>/<page_uuid>.rm`. Everything else is reMarkable's private state.
 
 ```mermaid
 flowchart LR
@@ -178,7 +259,7 @@ at startup (via `config.ensure_cairo_library_path()`), so no manual export is ne
 | `remarkable_list_documents` | List documents (folders excluded) with optional `search`, `file_type`, and `tag` filters |
 | `remarkable_list_folders` | List folder records (`CollectionType`) with their parent ids |
 | `remarkable_get_document_info` | Detailed metadata for a document (rejects folders) |
-| `remarkable_render_pages` | Render selected pages to a single PDF |
+| `remarkable_render_pages` | Render selected pages to a single PDF; mixes `rm_v6` strokes and `pdf_passthrough` pages, surfaces structured failure codes (`v5_unsupported`, `no_source`, …) |
 | `remarkable_render_document` | Render all pages of a document to PDF |
 | `remarkable_cleanup_renders` | Remove temporary rendered PDFs |
 
@@ -300,7 +381,10 @@ remarkable-mcp-redux/
 │   ├── schemas.py                  # Pydantic models for .metadata and .content JSON
 │   ├── _cache.py                   # Read-only cache loader (parses raw JSON via schemas)
 │   │                               # - is_descendant_of / count_descendants for cycle safety
-│   ├── _render.py                  # rmc → SVG → cairosvg → PDF pipeline
+│   ├── _page_sources.py            # Typed PageSource union (rm_v6, rm_v5, pdf_passthrough, missing)
+│   ├── _rm_format.py               # .rm header version probe (returns 5 / 6 / None)
+│   ├── _pdf_passthrough.py         # Single-page extraction from source PDFs (pypdf)
+│   ├── _render.py                  # render_page_source dispatcher + typed RenderError hierarchy
 │   ├── _writes.py                  # Atomic, backup-protected mutations:
 │   │                               # - MetadataWriter (rename / move / pin)
 │   │                               # - MetadataRestorer (undo from latest backup)
@@ -316,16 +400,32 @@ remarkable-mcp-redux/
     ├── conftest.py                 # Synthetic cache fixtures (docs + folders + nested + iOS)
     ├── test_remarkable_client.py   # Unit tests
     ├── test_server.py              # Integration / write-tool gating tests
+    ├── test_rm_format.py           # .rm header version probe
+    ├── test_pdf_passthrough.py     # Single-page PDF extraction
+    ├── test_render_dispatch.py     # PageSource dispatch round-trip
     └── test_e2e.py                 # End-to-end stdio tests
 ```
 
-The rendering pipeline:
+The rendering pipeline dispatches each page on a typed `PageSource`:
 
-1. **rmc** parses reMarkable's proprietary `.rm` binary format (v6) into SVG. Non-zero
-   `rmc` exit codes now surface as failed pages in the response.
-2. **cairosvg** converts SVG to PDF
-3. **pypdf** merges per-page PDFs into a single document
-4. Claude reads the PDF and does whatever you need — transcription, diagram interpretation, summarization
+- **`rm_v6`** — vector strokes from current-firmware `.rm` files. `rmc`
+  parses the `.rm` into SVG, `cairosvg` rasterises SVG to PDF.
+- **`pdf_passthrough`** — unannotated PDF page. `pypdf` slices the requested
+  page directly out of the cached `<id>.pdf`; `rmc` is not involved.
+- **`rm_v5`** — legacy pre-firmware-v3 strokes. The header is detected up
+  front and the page surfaces as a structured failure with
+  `code: "v5_unsupported"` instead of crashing the request. Restoring v5
+  rendering is tracked as an open follow-up.
+- **`missing`** — no `.rm` file and no source-PDF page to fall back to.
+  Surfaces as `code: "no_source"`.
+
+Successfully rendered pages are merged into one document via `pypdf` and
+written to `<render_dir>/<doc_id>.pdf`. The response carries
+`pages_rendered`, `pages_failed[]` (each entry stamped with a stable `code`
+plus a human `reason`), and — when at least one page rendered — a
+`sources_used` summary like `{"rm_v6": 5, "pdf_passthrough": 12}`. Claude
+reads the PDF and does whatever you need — transcription, diagram
+interpretation, summarisation.
 
 ## Tests
 
