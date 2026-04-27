@@ -1,5 +1,5 @@
-# ABOUTME: Rendering pipeline for reMarkable .rm pages: rmc -> SVG -> cairosvg -> PDF.
-# ABOUTME: Per-page rendering plus multi-page merge into a single PDF via pypdf.
+# ABOUTME: Rendering pipeline dispatcher for reMarkable pages (typed PageSource union).
+# ABOUTME: Mechanism-only: client.py owns per-page source policy; this module just executes.
 
 import io
 import shutil
@@ -9,13 +9,92 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
+from ._page_sources import (
+    MissingSource,
+    PageSource,
+    PdfPassthroughSource,
+    RmV5Source,
+    RmV6Source,
+    source_label,
+)
+from ._pdf_passthrough import extract_pdf_page
 from .config import ensure_cairo_library_path
 
 ensure_cairo_library_path()
 
 
+# ------------------------------------------------------------------
+# Typed exceptions
+# ------------------------------------------------------------------
+
+
+class RenderError(Exception):
+    """Base class for renderer failures. Carries a stable ``code`` string."""
+
+    code: str = "render_error"
+
+
+class LegacyV5Error(RenderError):
+    """Raised when a page is in the pre-firmware-v3 v5 .rm format."""
+
+    code = "v5_unsupported"
+
+
+class NoSourceError(RenderError):
+    """Raised when there is no usable source for a page (no .rm, no source PDF)."""
+
+    code = "no_source"
+
+
+class RmcFailedError(RenderError):
+    """Raised when the rmc subprocess returns non-zero or produces no SVG."""
+
+    code = "rmc_failed"
+
+
+class CairoSvgFailedError(RenderError):
+    """Raised when cairosvg cannot render the SVG produced by rmc."""
+
+    code = "cairosvg_failed"
+
+
+class PdfExtractError(RenderError):
+    """Raised when pypdf fails to extract a page from the source PDF."""
+
+    code = "pdf_extract_failed"
+
+
+# ------------------------------------------------------------------
+# Public dispatch surface
+# ------------------------------------------------------------------
+
+
+def render_page_source(src: PageSource) -> bytes:
+    """Render a single ``PageSource`` to PDF bytes.
+
+    Pure dispatch by variant. Each branch raises a typed ``RenderError``
+    subclass on failure; callers map ``exc.code`` into ``pages_failed``.
+    """
+    match src:
+        case RmV6Source(rm_path=rm_path):
+            return _render_rm_v6(rm_path)
+        case PdfPassthroughSource(source_pdf=src_pdf, pdf_page_index=idx):
+            return _render_pdf_passthrough(src_pdf, idx)
+        case RmV5Source(rm_path=rm_path):
+            raise LegacyV5Error(
+                f"{rm_path.name} is a legacy v5 .rm file (pre-firmware-v3). "
+                "rmc/rmscene only support v6; re-open the notebook on the "
+                "device or in the desktop app to migrate it to v6."
+            )
+        case MissingSource():
+            raise NoSourceError(
+                "no .rm file and no source PDF page available for this page"
+            )
+    raise RenderError(f"Unhandled PageSource variant: {type(src).__name__}")
+
+
 class RemarkableRenderer:
-    """Render reMarkable .rm pages to PDF via rmc -> SVG -> cairosvg -> PDF."""
+    """Render a sequence of ``PageSource`` plans into a single merged PDF on disk."""
 
     def __init__(self, render_dir: Path):
         self.render_dir = Path(render_dir)
@@ -24,57 +103,83 @@ class RemarkableRenderer:
         self,
         doc_id: str,
         document_name: str,
-        page_ids: list[str],
-        page_dir: Path,
+        plan: list[PageSource | None],
         selected_indices: list[int],
     ) -> dict:
-        """Render selected pages and merge them into a single PDF on disk."""
+        """Render each ``PageSource`` in ``plan`` and merge into a single PDF.
+
+        ``plan`` is parallel to ``selected_indices``: ``plan[i]`` is the source
+        for ``selected_indices[i]``, or ``None`` for an out-of-bounds index.
+        """
         self.render_dir.mkdir(parents=True, exist_ok=True)
         writer = PdfWriter()
         pages_rendered = 0
         pages_failed: list[dict] = []
+        sources_used: dict[str, int] = {}
 
-        for idx in selected_indices:
-            if idx < 0 or idx >= len(page_ids):
-                pages_failed.append({"index": idx, "reason": "out of bounds"})
-                continue
-
-            page_id = page_ids[idx]
-            rm_path = page_dir / f"{page_id}.rm"
-
-            if not rm_path.exists():
-                pages_failed.append({"index": idx, "reason": "no .rm file"})
+        for plan_pos, idx in enumerate(selected_indices):
+            src = plan[plan_pos] if plan_pos < len(plan) else None
+            if src is None:
+                pages_failed.append(
+                    {
+                        "index": idx,
+                        "code": "out_of_bounds",
+                        "reason": "out of bounds",
+                    }
+                )
                 continue
 
             try:
-                pdf_bytes = render_single_page(rm_path)
+                pdf_bytes = render_page_source(src)
+            except RenderError as exc:
+                pages_failed.append(
+                    {"index": idx, "code": exc.code, "reason": str(exc)}
+                )
+                continue
+            except Exception as exc:
+                pages_failed.append(
+                    {"index": idx, "code": "render_error", "reason": str(exc)}
+                )
+                continue
+
+            try:
                 reader = PdfReader(io.BytesIO(pdf_bytes))
                 for page in reader.pages:
                     writer.add_page(page)
-                pages_rendered += 1
             except Exception as exc:
-                pages_failed.append({"index": idx, "reason": str(exc)})
+                pages_failed.append(
+                    {"index": idx, "code": "render_error", "reason": str(exc)}
+                )
+                continue
+
+            pages_rendered += 1
+            label = source_label(src)
+            sources_used[label] = sources_used.get(label, 0) + 1
 
         if pages_rendered == 0:
-            return {
+            response: dict = {
                 "pdf_path": None,
                 "document_name": document_name,
                 "pages_rendered": 0,
                 "pages_failed": pages_failed,
                 "page_indices": selected_indices,
             }
+            return response
 
         pdf_path = self.render_dir / f"{doc_id}.pdf"
         with open(pdf_path, "wb") as f:
             writer.write(f)
 
-        return {
+        response = {
             "pdf_path": str(pdf_path),
             "document_name": document_name,
             "pages_rendered": pages_rendered,
             "pages_failed": pages_failed,
             "page_indices": selected_indices,
         }
+        if sources_used:
+            response["sources_used"] = sources_used
+        return response
 
     def cleanup(self) -> dict:
         """Remove all files from the render directory."""
@@ -92,8 +197,13 @@ class RemarkableRenderer:
         return {"files_removed": files_removed, "bytes_freed": bytes_freed}
 
 
-def render_single_page(rm_path: Path) -> bytes:
-    """Render a single .rm file to PDF bytes via rmc -> SVG -> cairosvg."""
+# ------------------------------------------------------------------
+# Per-variant backends
+# ------------------------------------------------------------------
+
+
+def _render_rm_v6(rm_path: Path) -> bytes:
+    """Render a v6 .rm via rmc -> SVG -> cairosvg -> PDF bytes."""
     with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
         svg_path = tmp.name
 
@@ -105,13 +215,32 @@ def render_single_page(rm_path: Path) -> bytes:
         if returncode != 0:
             stderr = (getattr(proc, "stderr", "") or "").strip()
             detail = f": {stderr}" if stderr else ""
-            raise RuntimeError(f"rmc failed (exit {returncode}) for {rm_path}{detail}")
+            raise RmcFailedError(
+                f"rmc failed (exit {returncode}) for {rm_path}{detail}"
+            )
         if not Path(svg_path).exists() or Path(svg_path).stat().st_size == 0:
-            raise RuntimeError(f"rmc produced no output for {rm_path}")
-        return _svg_to_pdf_bytes(url=svg_path)
+            raise RmcFailedError(f"rmc produced no output for {rm_path}")
+        try:
+            return _svg_to_pdf_bytes(url=svg_path)
+        except Exception as exc:
+            raise CairoSvgFailedError(
+                f"cairosvg failed to convert SVG for {rm_path}: {exc}"
+            ) from exc
     finally:
         if Path(svg_path).exists():
             Path(svg_path).unlink()
+
+
+def _render_pdf_passthrough(source_pdf: Path, page_index: int) -> bytes:
+    """Wrap pypdf extraction errors in a typed renderer exception."""
+    try:
+        return extract_pdf_page(source_pdf, page_index)
+    except (FileNotFoundError, IndexError) as exc:
+        raise PdfExtractError(str(exc)) from exc
+    except Exception as exc:
+        raise PdfExtractError(
+            f"failed to extract PDF page {page_index} from {source_pdf}: {exc}"
+        ) from exc
 
 
 def check_rmc_available() -> bool:

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
 # Folder UUIDs used by fixtures (kept stable so tests can refer to them by id)
 WORK_FOLDER_ID = "ffff-folder-work"
@@ -20,6 +21,15 @@ NESTED_FOLDER_B = "nest-b"
 NESTED_FOLDER_C = "nest-c"
 NESTED_FOLDER_D = "nest-d"
 NESTED_DOC_INSIDE_C = "nest-doc-c"
+
+# Render-pipeline fixture ids
+UNANNOTATED_PDF_DOC_ID = "uuuu-unannotated-pdf"
+LEGACY_V5_DOC_ID = "vvvv-legacy-v5"
+MIXED_PDF_DOC_ID = "mmmm-mixed-pdf"
+
+# Real .rm headers are 43 bytes: a literal version banner padded with spaces.
+# We replicate that shape so parse_rm_version sees realistic input.
+_RM_HEADER_LEN = 43
 
 
 @pytest.fixture
@@ -175,6 +185,78 @@ def render_dir(tmp_path):
 
 
 @pytest.fixture
+def unannotated_pdf_cache(tmp_path):
+    """Cache containing one PDF document with no .rm files but a real source PDF.
+
+    Mirrors the on-device shape of an unread/unannotated PDF: a 3-page
+    ``<doc_id>/<doc_id>.pdf`` is present, but no ``<page>.rm`` files exist.
+    Drives Bug 1 (PDF passthrough) coverage end-to-end.
+    """
+    page_ids = ["pdf-page-1", "pdf-page-2", "pdf-page-3"]
+    _create_document(
+        tmp_path,
+        doc_id=UNANNOTATED_PDF_DOC_ID,
+        name="Unannotated PDF",
+        page_ids=page_ids,
+        content_format="v2",
+        file_type="pdf",
+        create_rm_files=False,
+        create_source_pdf=True,
+        original_page_count=3,
+        size_in_bytes="4096",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def legacy_v5_cache(tmp_path):
+    """Cache containing one notebook whose .rm files are pre-firmware-v3 v5 format.
+
+    Drives Bug 2 (legacy v5 detection) coverage. The .rm files carry a real
+    43-byte v5 header so ``parse_rm_version`` returns 5.
+    """
+    page_ids = ["v5-page-1", "v5-page-2"]
+    _create_document(
+        tmp_path,
+        doc_id=LEGACY_V5_DOC_ID,
+        name="Real Analysis (legacy)",
+        page_ids=page_ids,
+        content_format="v2",
+        file_type="notebook",
+        rm_version=5,
+        original_page_count=-1,
+        size_in_bytes="200",
+    )
+    return tmp_path
+
+
+@pytest.fixture
+def mixed_pdf_cache(tmp_path):
+    """Cache containing a partially-annotated PDF.
+
+    Three pages: index 1 has a .rm file (annotated v6), indexes 0 and 2 are
+    unannotated. The source PDF has all three pages. Lets the dispatcher
+    exercise both ``RmV6Source`` and ``PdfPassthroughSource`` in one document.
+    """
+    page_ids = ["mix-page-1", "mix-page-2", "mix-page-3"]
+    _create_document(
+        tmp_path,
+        doc_id=MIXED_PDF_DOC_ID,
+        name="Mixed PDF",
+        page_ids=page_ids,
+        content_format="v2",
+        file_type="pdf",
+        create_rm_files=True,
+        rm_pages=["mix-page-2"],
+        rm_version=6,
+        create_source_pdf=True,
+        original_page_count=3,
+        size_in_bytes="6000",
+    )
+    return tmp_path
+
+
+@pytest.fixture
 def empty_cache(tmp_path):
     """Provide an empty directory (no documents)."""
     return tmp_path / "empty"
@@ -260,8 +342,25 @@ def _create_document(
     size_in_bytes: str = "0",
     deleted: bool = False,
     pinned: bool = False,
+    create_source_pdf: bool = False,
+    rm_version: int | None = None,
+    rm_pages: list[str] | None = None,
 ) -> None:
-    """Helper to create a synthetic DocumentType record with .metadata and .content files."""
+    """Helper to create a synthetic DocumentType record with .metadata and .content files.
+
+    ``rm_version`` controls how the on-disk .rm bytes look:
+      - ``None`` (default): legacy 64-byte zero stub — preserves backward
+        compatibility with tests that mock rmc but never inspect headers.
+      - ``5``/``6``: write a real reMarkable .lines header so format-aware code
+        paths can dispatch correctly.
+
+    ``rm_pages`` lets callers create .rm files for only a subset of page_ids
+    (used by the mixed-source fixture). When ``None``, all page_ids get .rm
+    stubs as long as ``create_rm_files`` is True.
+
+    ``create_source_pdf`` writes ``<doc_id>/<doc_id>.pdf`` containing a blank
+    page per page id, using pypdf — the on-device cache layout for PDFs.
+    """
     metadata = {
         "type": "DocumentType",
         "visibleName": name,
@@ -302,5 +401,24 @@ def _create_document(
     doc_dir = base_path / doc_id
     doc_dir.mkdir(exist_ok=True)
     if create_rm_files:
-        for pid in page_ids:
-            (doc_dir / f"{pid}.rm").write_bytes(b"\x00" * 64)
+        rm_payload = _rm_stub_bytes(rm_version)
+        eligible_pages = page_ids if rm_pages is None else rm_pages
+        for pid in eligible_pages:
+            (doc_dir / f"{pid}.rm").write_bytes(rm_payload)
+    if create_source_pdf:
+        # Real cache layout: source PDF is a sibling of <doc_id>.metadata/.content
+        # (i.e. <base_path>/<doc_id>.pdf), not inside the page directory.
+        writer = PdfWriter()
+        for _ in page_ids:
+            writer.add_blank_page(width=612, height=792)
+        with open(base_path / f"{doc_id}.pdf", "wb") as f:
+            writer.write(f)
+
+
+def _rm_stub_bytes(rm_version: int | None) -> bytes:
+    """Build .rm file bytes. None => zero stub; 5/6 => realistic 43-byte header."""
+    if rm_version is None:
+        return b"\x00" * 64
+    banner = f"reMarkable .lines file, version={rm_version}".encode()
+    header = banner.ljust(_RM_HEADER_LEN, b" ")
+    return header + b"\x00" * 21

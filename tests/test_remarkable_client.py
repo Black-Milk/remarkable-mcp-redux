@@ -11,6 +11,8 @@ import pytest
 from remarkable_mcp_redux.client import RemarkableClient
 from remarkable_mcp_redux.config import BACKUP_RETENTION_ENV_VAR
 from tests.conftest import (
+    LEGACY_V5_DOC_ID,
+    MIXED_PDF_DOC_ID,
     NESTED_DOC_INSIDE_C,
     NESTED_FOLDER_A,
     NESTED_FOLDER_B,
@@ -19,6 +21,7 @@ from tests.conftest import (
     PERSONAL_FOLDER_ID,
     PINNED_DOC_ID,
     TRASHED_DOC_ID,
+    UNANNOTATED_PDF_DOC_ID,
     WORK_FOLDER_ID,
 )
 
@@ -533,20 +536,26 @@ class TestRenderPages:
 
     @pytest.mark.unit
     def test_failed_pages_no_rm_file(self, fake_cache, render_dir):
-        """Document with no .rm files should report all pages as failed."""
+        """Notebook with no .rm files (and no source PDF) reports all pages as failed.
+
+        ``Empty Notebook`` is a notebook fixture, so PDF passthrough is not
+        applicable — the only thing the dispatcher can do is emit ``no_source``.
+        """
         client = RemarkableClient(base_path=fake_cache, render_dir=render_dir)
         result = client.render_pages("cccc-7777-8888-9999")
         assert result["pages_rendered"] == 0
         assert len(result["pages_failed"]) == 1
+        assert result["pages_failed"][0]["code"] == "no_source"
 
     @pytest.mark.unit
     def test_out_of_bounds_indices(self, fake_cache, render_dir):
-        """Out-of-range indices should appear in pages_failed."""
+        """Out-of-range indices should appear in pages_failed with code=out_of_bounds."""
         client = RemarkableClient(base_path=fake_cache, render_dir=render_dir)
         with _mock_rendering():
             result = client.render_pages("aaaa-1111-2222-3333", page_indices=[0, 99])
-        # Index 0 should render, index 99 should fail
-        assert 99 in [f["index"] for f in result["pages_failed"]]
+        failed = [f for f in result["pages_failed"] if f["index"] == 99]
+        assert len(failed) == 1
+        assert failed[0]["code"] == "out_of_bounds"
 
     @pytest.mark.unit
     def test_missing_document_error(self, fake_cache, render_dir):
@@ -606,6 +615,76 @@ class TestRenderPages:
         assert result["pages_rendered"] == 0
         assert len(result["pages_failed"]) == 1
         assert "rmc" in result["pages_failed"][0]["reason"].lower()
+        assert result["pages_failed"][0]["code"] == "rmc_failed"
+
+
+# ---------------------------------------------------------------------------
+# render_pages — page-source dispatch (PDF passthrough, v5 detection, mixed)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPagesSourceDispatch:
+    """Exercises the ``PageSource`` dispatch surface end-to-end via render_pages."""
+
+    @pytest.mark.unit
+    def test_unannotated_pdf_is_passthrough_rendered(
+        self, unannotated_pdf_cache, render_dir
+    ):
+        """Bug 1: an unannotated PDF must render via pypdf passthrough."""
+        client = RemarkableClient(
+            base_path=unannotated_pdf_cache, render_dir=render_dir
+        )
+        result = client.render_pages(UNANNOTATED_PDF_DOC_ID)
+        assert result.get("error") is None or result.get("error") is False or "error" not in result
+        assert result["pages_rendered"] == 3
+        assert result["pages_failed"] == []
+        assert result["pdf_path"] is not None
+        assert Path(result["pdf_path"]).exists()
+        assert result["sources_used"] == {"pdf_passthrough": 3}
+
+    @pytest.mark.unit
+    def test_legacy_v5_notebook_yields_structured_failure(
+        self, legacy_v5_cache, render_dir
+    ):
+        """Bug 2: pre-firmware-v3 v5 notebook surfaces v5_unsupported, not a traceback."""
+        client = RemarkableClient(base_path=legacy_v5_cache, render_dir=render_dir)
+        result = client.render_pages(LEGACY_V5_DOC_ID)
+        assert result["pages_rendered"] == 0
+        assert result["pdf_path"] is None
+        assert len(result["pages_failed"]) == 2
+        for entry in result["pages_failed"]:
+            assert entry["code"] == "v5_unsupported"
+            assert "Traceback" not in entry["reason"]
+            assert "version=5" in entry["reason"] or "v5" in entry["reason"].lower()
+        assert "sources_used" not in result or result["sources_used"] == {}
+
+    @pytest.mark.unit
+    def test_mixed_pdf_uses_both_sources(self, mixed_pdf_cache, render_dir):
+        """A partially annotated PDF: rm_v6 for annotated pages, passthrough otherwise."""
+        client = RemarkableClient(base_path=mixed_pdf_cache, render_dir=render_dir)
+        with _mock_rendering():
+            result = client.render_pages(MIXED_PDF_DOC_ID)
+        assert result["pages_rendered"] == 3
+        assert result["pages_failed"] == []
+        assert result["sources_used"] == {"rm_v6": 1, "pdf_passthrough": 2}
+
+    @pytest.mark.unit
+    def test_sources_used_omitted_when_no_pages_rendered(
+        self, legacy_v5_cache, render_dir
+    ):
+        """Failure-only responses should not advertise an empty sources_used dict."""
+        client = RemarkableClient(base_path=legacy_v5_cache, render_dir=render_dir)
+        result = client.render_pages(LEGACY_V5_DOC_ID)
+        assert result.get("sources_used", {}) == {}
+
+    @pytest.mark.unit
+    def test_unannotated_notebook_pages_are_no_source(self, fake_cache, render_dir):
+        """Empty Notebook is type=notebook with no source PDF; expect code=no_source."""
+        client = RemarkableClient(base_path=fake_cache, render_dir=render_dir)
+        result = client.render_pages("cccc-7777-8888-9999")
+        assert result["pages_failed"]
+        for entry in result["pages_failed"]:
+            assert entry["code"] == "no_source"
 
 
 # ---------------------------------------------------------------------------
