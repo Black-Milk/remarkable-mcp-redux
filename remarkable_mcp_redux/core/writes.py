@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import backup_retention_count
+from ..config import backup_retention_count
 
 logger = logging.getLogger("remarkable-mcp")
 

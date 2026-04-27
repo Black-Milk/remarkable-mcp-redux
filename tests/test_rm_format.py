@@ -1,9 +1,9 @@
-# ABOUTME: Unit tests for the .rm header version probe in _rm_format.
+# ABOUTME: Unit tests for the .rm header version probe in core.rm_format.
 # ABOUTME: Covers v5/v6/short-file/missing-file/garbage cases.
 
 import pytest
 
-from remarkable_mcp_redux._rm_format import parse_rm_version
+from remarkable_mcp_redux.core.rm_format import parse_rm_version
 
 
 def _v5_header() -> bytes:

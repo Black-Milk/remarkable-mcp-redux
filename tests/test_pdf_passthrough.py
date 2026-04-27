@@ -1,4 +1,4 @@
-# ABOUTME: Unit tests for single-page PDF extraction in _pdf_passthrough.
+# ABOUTME: Unit tests for single-page PDF extraction in core.pdf_passthrough.
 # ABOUTME: Covers round-trip extraction, out-of-range, and missing-source cases.
 
 import io
@@ -6,7 +6,7 @@ import io
 import pytest
 from pypdf import PdfReader, PdfWriter
 
-from remarkable_mcp_redux._pdf_passthrough import extract_pdf_page
+from remarkable_mcp_redux.core.pdf_passthrough import extract_pdf_page
 
 
 def _write_blank_pdf(path, num_pages: int) -> None:

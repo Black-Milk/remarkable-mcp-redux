@@ -669,7 +669,7 @@ class TestRenderPages:
             return MagicMock(returncode=1, stderr="rmc died")
 
         with patch.multiple(
-            "remarkable_mcp_redux._render",
+            "remarkable_mcp_redux.core.render",
             _run_rmc=fake_rmc_fail,
         ):
             result = client.render_pages("aaaa-1111-2222-3333", first_n=1)
@@ -1005,7 +1005,7 @@ def _mock_rendering():
         return minimal_pdf
 
     return patch.multiple(
-        "remarkable_mcp_redux._render",
+        "remarkable_mcp_redux.core.render",
         _run_rmc=fake_rmc,
         _svg_to_pdf_bytes=fake_svg2pdf,
     )
@@ -1521,7 +1521,7 @@ class TestCreateFolder:
         self, fake_cache, monkeypatch
     ):
         """If the .metadata write fails, the .content sibling must be removed."""
-        from remarkable_mcp_redux import _writes as writes_module
+        from remarkable_mcp_redux.core import writes as writes_module
 
         original_write = writes_module._atomic_write_json
         calls = {"n": 0}

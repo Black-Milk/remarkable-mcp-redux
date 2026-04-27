@@ -1,4 +1,4 @@
-# ABOUTME: Unit tests for the page-source dispatcher in _render.
+# ABOUTME: Unit tests for the page-source dispatcher in core.render.
 # ABOUTME: Covers each PageSource variant in isolation, mocking rmc/cairosvg only for v6.
 
 from pathlib import Path
@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pypdf import PdfWriter
 
-from remarkable_mcp_redux._page_sources import (
+from remarkable_mcp_redux.core.page_sources import (
     MissingSource,
     PdfPassthroughSource,
     RmV5Source,
     RmV6Source,
 )
-from remarkable_mcp_redux._render import (
+from remarkable_mcp_redux.core.render import (
     LegacyV5Error,
     NoSourceError,
     RmcFailedError,
@@ -41,7 +41,7 @@ def _mock_rmc_success():
         return MagicMock(returncode=0)
 
     return patch.multiple(
-        "remarkable_mcp_redux._render",
+        "remarkable_mcp_redux.core.render",
         _run_rmc=fake_rmc,
         _svg_to_pdf_bytes=lambda **_: _MIN_PDF,
     )
@@ -52,7 +52,7 @@ def _mock_rmc_failure(stderr_text: str = "rmc died"):
         return MagicMock(returncode=1, stderr=stderr_text)
 
     return patch.multiple(
-        "remarkable_mcp_redux._render",
+        "remarkable_mcp_redux.core.render",
         _run_rmc=fake_rmc,
     )
 

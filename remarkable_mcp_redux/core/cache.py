@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from .schemas import (
+from ..schemas import (
     CacheItemMetadata,
     CollectionMetadata,
     ContentMetadata,

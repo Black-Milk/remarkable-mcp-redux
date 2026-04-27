@@ -1,5 +1,5 @@
 # ABOUTME: Rendering pipeline dispatcher for reMarkable pages (typed PageSource union).
-# ABOUTME: Mechanism-only: client.py owns per-page source policy; this module just executes.
+# ABOUTME: Mechanism-only: facades/render.py owns per-page source policy; this module just executes.
 
 import io
 import shutil
@@ -9,7 +9,8 @@ from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
 
-from ._page_sources import (
+from ..config import ensure_cairo_library_path
+from .page_sources import (
     MissingSource,
     PageSource,
     PdfPassthroughSource,
@@ -17,8 +18,7 @@ from ._page_sources import (
     RmV6Source,
     source_label,
 )
-from ._pdf_passthrough import extract_pdf_page
-from .config import ensure_cairo_library_path
+from .pdf_passthrough import extract_pdf_page
 
 ensure_cairo_library_path()
 
