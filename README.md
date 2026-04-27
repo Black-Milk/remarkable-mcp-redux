@@ -18,18 +18,103 @@ This is a fork of [SamMorrowDrums/remarkable-mcp](https://github.com/SamMorrowDr
 
 ## How it works
 
-The reMarkable desktop app syncs your notebooks to a local cache. This MCP server reads that cache and exposes it as tools that Claude can use directly.
+The reMarkable desktop app keeps a local copy of your tablet's notebooks and
+documents on your Mac. This MCP server reads (and optionally edits) that local
+copy, then exposes it to Claude as a small set of tools.
 
-```
-reMarkable tablet
-    → reMarkable desktop app (cloud sync)
-    → Local cache (~/.../remarkable/desktop)
-    → remarkable-mcp (rmc → SVG → cairosvg → PDF)
-    → Claude reads the PDF
-    → Clean Markdown, Excalidraw diagrams, or whatever you need
+```mermaid
+flowchart LR
+    Tablet["reMarkable tablet"]
+    Desktop["reMarkable desktop app"]
+    Cache[("Local cache")]
+    MCP["remarkable-mcp-redux"]
+    RenderDir[("/tmp/remarkable-renders")]
+    Claude["Claude"]
+
+    Tablet -->|"cloud sync"| Desktop
+    Desktop --> Cache
+    Cache --> MCP
+    MCP -.->|"opt-in writes"| Cache
+    MCP -->|"rmc → SVG → cairosvg → PDF"| RenderDir
+    MCP -->|"metadata responses"| Claude
+    RenderDir -->|"reads PDF"| Claude
 ```
 
-**No API keys. No cloud access. Everything runs locally.** The desktop app handles syncing; this server just reads the files it produces.
+The dotted edge marks the opt-in write path; everything else is read-only by
+default. **No API keys. No cloud access. Everything runs locally.** The
+desktop app handles syncing; this server just reads (and, opt-in, edits) the
+files it produces.
+
+### The cache mental model
+
+The desktop cache is **not** a tree of folders on disk. It is a flat directory
+of records, each addressed by a UUID. For every document or folder you have,
+the cache stores a few sibling files keyed by that id:
+
+- `<id>.metadata` — a small JSON blob with `visibleName`, `parent`, `type`
+  (`DocumentType` or `CollectionType`), `lastModified`, `deleted`, `pinned`,
+  and the sync flags (`metadatamodified`, `modified`).
+- `<id>.content` — structural info: `fileType` (`pdf`, `notebook`, `epub`),
+  page index, tags, original page count, embedded title/authors, size.
+- `<id>/...` — per-page data used for rendering (notebook pages live here as
+  `.rm` files alongside any source assets).
+
+Folders are records too. A folder is a `.metadata` file with
+`type: "CollectionType"`, and "X is inside folder Y" is expressed by X's
+`parent` field pointing at Y's id. The empty string `""` means the root;
+`"trash"` is a sentinel for the trash bin.
+
+```mermaid
+flowchart LR
+    subgraph cache [Flat cache directory]
+        DocX["Document X (DocumentType)"]
+        FolderB["Folder B (CollectionType)"]
+        FolderA["Folder A (CollectionType)"]
+        DocY["Document Y (DocumentType)"]
+    end
+    Root["Root sentinel (parent = empty string)"]
+
+    DocX -->|"parent"| FolderB
+    FolderB -->|"parent"| FolderA
+    FolderA -->|"parent"| Root
+    DocY -->|"parent"| Root
+```
+
+Every record on disk is a peer in the cache directory. Hierarchy lives only
+in the `parent` arrows above, not in the filesystem layout.
+
+### Why "move" only writes metadata
+
+Because containment lives in metadata, moving a document or folder does **not**
+relocate any files on disk. `remarkable_move_document` and
+`remarkable_move_folder` rewrite the target's `<id>.metadata` with a new
+`parent` value and re-stamp `lastModified`, `metadatamodified=true`, and
+`modified=true` so the desktop sync engine notices the local edit on its next
+pass. The source PDF, notebook pages, and any other blobs stay exactly where
+they were. Renames and pins follow the same pattern — a single field changes
+in the same `.metadata` JSON, written atomically with a timestamped backup.
+
+This is the same pattern most sync-friendly apps (Drive, Dropbox, photo
+libraries, note apps) use: stable record ids, with hierarchy expressed as
+relationships rather than filesystem paths. It keeps moves cheap, sync deltas
+small, and avoids the path/encoding/duplicate-name problems that filesystem
+hierarchies bring.
+
+### Source cache vs. rendered output
+
+There are two distinct piles of files to keep separate:
+
+- **The reMarkable cache**
+  (`~/Library/Containers/com.remarkable.desktop/.../desktop`). Owned by the
+  desktop app. Read by every tool. Mutated only by the opt-in write tools, and
+  only via atomic `.metadata` writes with timestamped backups.
+- **Render output** (`/tmp/remarkable-renders/` by default). Owned by this
+  server. `remarkable_render_pages` and `remarkable_render_document` write
+  `<doc_id>.pdf` here for Claude to read; `remarkable_cleanup_renders` clears
+  it. Nothing here is synced anywhere — it's a scratch directory.
+
+Move, rename, and pin operations only touch the cache; they never update or
+relocate anything in the render directory.
 
 ## Prerequisites
 
