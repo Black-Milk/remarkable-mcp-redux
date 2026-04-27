@@ -10,6 +10,7 @@ from pypdf import PdfWriter
 # Folder UUIDs used by fixtures (kept stable so tests can refer to them by id)
 WORK_FOLDER_ID = "ffff-folder-work"
 PERSONAL_FOLDER_ID = "ffff-folder-personal"
+PINNED_FOLDER_ID = "ffff-folder-pinned"
 
 # Trashed and pinned doc ids for write-path tests
 TRASHED_DOC_ID = "tttt-trashed-doc"
@@ -51,6 +52,7 @@ def fake_cache(tmp_path):
     Folders:
       Work                 - root folder
       Personal             - root folder
+      Favorites            - root folder, pinned=True (used to test pinned filter)
     """
     _create_folder(
         tmp_path,
@@ -65,6 +67,14 @@ def fake_cache(tmp_path):
         name="Personal",
         parent="",
         last_modified="1709400000000",
+    )
+    _create_folder(
+        tmp_path,
+        folder_id=PINNED_FOLDER_ID,
+        name="Favorites",
+        parent="",
+        last_modified="1709300000000",
+        pinned=True,
     )
 
     _create_document(

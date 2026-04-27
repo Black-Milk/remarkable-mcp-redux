@@ -69,6 +69,7 @@ class RemarkableClient:
         search: str | None = None,
         file_type: str | None = None,
         tag: str | None = None,
+        pinned: bool | None = None,
         parent: str | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -79,6 +80,8 @@ class RemarkableClient:
           - search: case-insensitive substring match on visibleName.
           - file_type: exact match on the .content fileType (e.g. "pdf", "notebook").
           - tag: exact match against any user-applied tag name in .content.
+          - pinned: True returns only pinned (favorited) records, False returns
+            only unpinned, None disables the filter.
           - parent: direct-child filter. None disables the filter, "" matches
             root, "<folder_id>" matches a validated CollectionType folder id.
 
@@ -103,6 +106,8 @@ class RemarkableClient:
             name = meta.visible_name or doc_id
             if search and search.lower() not in name.lower():
                 continue
+            if pinned is not None and bool(meta.pinned) is not pinned:
+                continue
             content = self.cache.load_content(doc_id)
             if file_type is not None and (
                 content is None or content.file_type != file_type
@@ -117,15 +122,18 @@ class RemarkableClient:
     def list_folders(
         self,
         search: str | None = None,
+        pinned: bool | None = None,
         parent: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict:
         """List CollectionType (folder) records in the cache.
 
-        Returns folder summaries with id, name, parent, and ISO timestamp.
-        Optional filters:
+        Returns folder summaries with id, name, parent, pinned flag, and ISO
+        timestamp. Optional filters:
           - search: case-insensitive substring match on visibleName.
+          - pinned: True returns only pinned (favorited) folders, False returns
+            only unpinned, None disables the filter.
           - parent: direct-child filter. None disables the filter, "" matches
             root, "<folder_id>" matches a validated CollectionType folder id.
 
@@ -148,12 +156,15 @@ class RemarkableClient:
             name = meta.visible_name or folder_id
             if search and search.lower() not in name.lower():
                 continue
+            if pinned is not None and bool(meta.pinned) is not pinned:
+                continue
             folders.append(
                 {
                     "folder_id": folder_id,
                     "name": name,
                     "parent": meta.parent,
                     "last_modified": meta.last_modified_iso or "",
+                    "pinned": bool(meta.pinned),
                 }
             )
 
@@ -190,6 +201,7 @@ class RemarkableClient:
             "type": meta.type,
             "parent": meta.parent,
             "last_modified": meta.last_modified_iso or "",
+            "pinned": bool(meta.pinned),
             "last_opened_page": meta.last_opened_page,
             "page_count": len(page_ids),
             "content_format": content_format,
@@ -924,6 +936,7 @@ def _document_summary(
         "type": meta.type,
         "parent": meta.parent,
         "last_modified": meta.last_modified_iso or "",
+        "pinned": bool(meta.pinned),
         "page_count": len(content.page_ids) if content is not None else 0,
     }
     summary.update(_content_summary(content))

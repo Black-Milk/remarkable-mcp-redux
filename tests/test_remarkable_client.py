@@ -20,6 +20,7 @@ from tests.conftest import (
     NESTED_FOLDER_D,
     PERSONAL_FOLDER_ID,
     PINNED_DOC_ID,
+    PINNED_FOLDER_ID,
     TRASHED_DOC_ID,
     UNANNOTATED_PDF_DOC_ID,
     WORK_FOLDER_ID,
@@ -141,6 +142,37 @@ class TestListDocuments:
         assert result["count"] == 1
         assert result["documents"][0]["name"] == "Architecture Sketch"
 
+    @pytest.mark.unit
+    def test_list_documents_filter_by_pinned_true(self, fake_cache):
+        """pinned=True should return only pinned/favorited documents."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(pinned=True)
+        assert result["count"] == 1
+        assert result["documents"][0]["doc_id"] == PINNED_DOC_ID
+        assert result["documents"][0]["pinned"] is True
+
+    @pytest.mark.unit
+    def test_list_documents_filter_by_pinned_false(self, fake_cache):
+        """pinned=False should exclude pinned records and return the rest."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(pinned=False)
+        ids = {d["doc_id"] for d in result["documents"]}
+        assert PINNED_DOC_ID not in ids
+        assert result["total_count"] == 4
+        assert all(d["pinned"] is False for d in result["documents"])
+
+    @pytest.mark.unit
+    def test_list_documents_includes_pinned_field(self, fake_cache):
+        """Every list_documents row should expose the pinned boolean."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents()
+        by_id = {d["doc_id"]: d for d in result["documents"]}
+        assert by_id[PINNED_DOC_ID]["pinned"] is True
+        for doc_id, doc in by_id.items():
+            assert isinstance(doc["pinned"], bool)
+            if doc_id != PINNED_DOC_ID:
+                assert doc["pinned"] is False
+
 
 # ---------------------------------------------------------------------------
 # list_documents pagination + parent filter
@@ -257,16 +289,16 @@ class TestListFolders:
     def test_list_folders_returns_collection_records(self, fake_cache):
         client = RemarkableClient(base_path=fake_cache)
         result = client.list_folders()
-        assert result["count"] == 2
+        assert result["count"] == 3
         names = {f["name"] for f in result["folders"]}
-        assert names == {"Work", "Personal"}
+        assert names == {"Work", "Personal", "Favorites"}
 
     @pytest.mark.unit
     def test_list_folders_includes_parent_and_id(self, fake_cache):
         client = RemarkableClient(base_path=fake_cache)
         result = client.list_folders()
         ids = {f["folder_id"] for f in result["folders"]}
-        assert ids == {WORK_FOLDER_ID, PERSONAL_FOLDER_ID}
+        assert ids == {WORK_FOLDER_ID, PERSONAL_FOLDER_ID, PINNED_FOLDER_ID}
         for folder in result["folders"]:
             assert folder["parent"] == ""
 
@@ -292,6 +324,27 @@ class TestListFolders:
         assert result["count"] == 0
         assert result["folders"] == []
 
+    @pytest.mark.unit
+    def test_list_folders_filter_by_pinned_true(self, fake_cache):
+        """pinned=True should return only pinned/favorited folders."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(pinned=True)
+        assert result["count"] == 1
+        assert result["folders"][0]["folder_id"] == PINNED_FOLDER_ID
+        assert result["folders"][0]["pinned"] is True
+
+    @pytest.mark.unit
+    def test_list_folders_includes_pinned_field(self, fake_cache):
+        """Every list_folders row should expose the pinned boolean."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders()
+        by_id = {f["folder_id"]: f for f in result["folders"]}
+        assert by_id[PINNED_FOLDER_ID]["pinned"] is True
+        for folder_id, folder in by_id.items():
+            assert isinstance(folder["pinned"], bool)
+            if folder_id != PINNED_FOLDER_ID:
+                assert folder["pinned"] is False
+
 
 # ---------------------------------------------------------------------------
 # list_folders pagination + parent filter
@@ -303,8 +356,8 @@ class TestListFoldersPagination:
     def test_default_includes_pagination_metadata(self, fake_cache):
         client = RemarkableClient(base_path=fake_cache)
         result = client.list_folders()
-        assert result["count"] == 2
-        assert result["total_count"] == 2
+        assert result["count"] == 3
+        assert result["total_count"] == 3
         assert result["limit"] == 100
         assert result["offset"] == 0
         assert result["has_more"] is False
@@ -315,7 +368,7 @@ class TestListFoldersPagination:
         client = RemarkableClient(base_path=fake_cache)
         result = client.list_folders(limit=1)
         assert result["count"] == 1
-        assert result["total_count"] == 2
+        assert result["total_count"] == 3
         assert result["has_more"] is True
 
     @pytest.mark.unit
@@ -431,6 +484,15 @@ class TestGetDocumentInfo:
         assert result.get("error") is not True
         assert result["name"] == "iOS Transfer"
         assert result["page_count"] == 1
+
+    @pytest.mark.unit
+    def test_includes_pinned_field(self, fake_cache):
+        """get_document_info should expose the pinned boolean for both states."""
+        client = RemarkableClient(base_path=fake_cache)
+        pinned_result = client.get_document_info(PINNED_DOC_ID)
+        assert pinned_result["pinned"] is True
+        unpinned_result = client.get_document_info("aaaa-1111-2222-3333")
+        assert unpinned_result["pinned"] is False
 
 
 # ---------------------------------------------------------------------------
