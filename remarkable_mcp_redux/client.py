@@ -61,6 +61,9 @@ class RemarkableClient:
         search: str | None = None,
         file_type: str | None = None,
         tag: str | None = None,
+        parent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List DocumentType records in the cache.
 
@@ -68,12 +71,27 @@ class RemarkableClient:
           - search: case-insensitive substring match on visibleName.
           - file_type: exact match on the .content fileType (e.g. "pdf", "notebook").
           - tag: exact match against any user-applied tag name in .content.
-        """
-        if not self.cache.exists():
-            return {"documents": [], "count": 0}
+          - parent: direct-child filter. None disables the filter, "" matches
+            root, "<folder_id>" matches a validated CollectionType folder id.
 
-        documents = []
+        Pagination is applied after filtering. Combine ``has_more`` with
+        ``offset`` + ``limit`` to walk large libraries in chunks that stay
+        under MCP per-call response budgets.
+        """
+        page_error = _validate_pagination(limit, offset)
+        if page_error is not None:
+            return page_error
+        parent_error = self._validate_parent(parent)
+        if parent_error is not None:
+            return parent_error
+
+        if not self.cache.exists():
+            return _paginate_response([], "documents", limit, offset, parent)
+
+        documents: list[dict] = []
         for doc_id, meta in self.cache.iter_documents():
+            if parent is not None and (meta.parent or "") != parent:
+                continue
             name = meta.visible_name or doc_id
             if search and search.lower() not in name.lower():
                 continue
@@ -86,18 +104,39 @@ class RemarkableClient:
                 continue
             documents.append(_document_summary(doc_id, name, meta, content))
 
-        return {"documents": documents, "count": len(documents)}
+        return _paginate_response(documents, "documents", limit, offset, parent)
 
-    def list_folders(self, search: str | None = None) -> dict:
+    def list_folders(
+        self,
+        search: str | None = None,
+        parent: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
         """List CollectionType (folder) records in the cache.
 
-        Returns a list of folder summaries with id, name, parent, and ISO timestamp.
-        """
-        if not self.cache.exists():
-            return {"folders": [], "count": 0}
+        Returns folder summaries with id, name, parent, and ISO timestamp.
+        Optional filters:
+          - search: case-insensitive substring match on visibleName.
+          - parent: direct-child filter. None disables the filter, "" matches
+            root, "<folder_id>" matches a validated CollectionType folder id.
 
-        folders = []
+        Pagination is applied after filtering.
+        """
+        page_error = _validate_pagination(limit, offset)
+        if page_error is not None:
+            return page_error
+        parent_error = self._validate_parent(parent)
+        if parent_error is not None:
+            return parent_error
+
+        if not self.cache.exists():
+            return _paginate_response([], "folders", limit, offset, parent)
+
+        folders: list[dict] = []
         for folder_id, meta in self.cache.iter_folders():
+            if parent is not None and (meta.parent or "") != parent:
+                continue
             name = meta.visible_name or folder_id
             if search and search.lower() not in name.lower():
                 continue
@@ -110,12 +149,16 @@ class RemarkableClient:
                 }
             )
 
-        return {"folders": folders, "count": len(folders)}
+        return _paginate_response(folders, "folders", limit, offset, parent)
 
-    def get_document_info(self, doc_id: str) -> dict:
+    def get_document_info(self, doc_id: str, include_page_ids: bool = True) -> dict:
         """Detailed metadata for a single DocumentType record.
 
         Refuses CollectionType records (folders) with an explicit error.
+        When ``include_page_ids`` is False the per-page UUID list is omitted
+        and the response carries ``first_page_id``/``last_page_id`` instead;
+        useful for very long documents where the full id list would blow past
+        MCP per-call response budgets.
         """
         meta = self.cache.load_metadata(doc_id)
         if meta is None:
@@ -141,9 +184,13 @@ class RemarkableClient:
             "last_modified": meta.last_modified_iso or "",
             "last_opened_page": meta.last_opened_page,
             "page_count": len(page_ids),
-            "page_ids": page_ids,
             "content_format": content_format,
         }
+        if include_page_ids:
+            info["page_ids"] = page_ids
+        else:
+            info["first_page_id"] = page_ids[0] if page_ids else None
+            info["last_page_id"] = page_ids[-1] if page_ids else None
         info.update(_content_summary(content))
         return info
 
@@ -636,6 +683,27 @@ class RemarkableClient:
             "backup_path": str(backup),
         }
 
+    def _validate_parent(self, parent: str | None) -> dict | None:
+        """Verify ``parent`` is None, "" (root), or an existing CollectionType id.
+
+        Returns an error dict on mismatch so list_documents/list_folders can
+        surface a clear failure instead of silently returning empty pages.
+        """
+        if parent is None or parent == "":
+            return None
+        target = self.cache.load_metadata(parent)
+        if target is None:
+            return {"error": True, "detail": f"Parent folder not found: {parent}"}
+        if not isinstance(target, CollectionMetadata):
+            return {
+                "error": True,
+                "detail": (
+                    f"Parent {parent} is not a folder (CollectionType); "
+                    "use an existing folder id or omit parent"
+                ),
+            }
+        return None
+
     def _sibling_name_taken(
         self,
         parent: str,
@@ -730,6 +798,42 @@ def _expect_kind(
             ),
         }
     return None
+
+
+def _validate_pagination(limit: int, offset: int) -> dict | None:
+    """Validate ``limit``/``offset`` arg pair. Returns an error dict or None."""
+    if not isinstance(limit, int) or limit < 1:
+        return {"error": True, "detail": "limit must be a positive integer"}
+    if not isinstance(offset, int) or offset < 0:
+        return {"error": True, "detail": "offset must be a non-negative integer"}
+    return None
+
+
+def _paginate_response(
+    items: list[dict],
+    items_key: str,
+    limit: int,
+    offset: int,
+    parent: str | None,
+) -> dict:
+    """Slice ``items`` by ``offset``/``limit`` and wrap with pagination metadata.
+
+    ``parent`` is echoed back only when the caller supplied a folder filter so
+    the response shape stays minimal for unfiltered queries.
+    """
+    total = len(items)
+    page = items[offset : offset + limit]
+    response: dict = {
+        items_key: page,
+        "count": len(page),
+        "total_count": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page) < total,
+    }
+    if parent is not None:
+        response["parent"] = parent
+    return response
 
 
 def _document_summary(

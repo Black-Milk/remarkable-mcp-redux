@@ -25,34 +25,74 @@ def _register_read_tools(mcp: FastMCP, client: RemarkableClient) -> None:
         search: str | None = None,
         file_type: str | None = None,
         tag: str | None = None,
+        parent: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> dict:
         """List documents in the reMarkable local cache (folders are excluded).
         Optional filters:
           - search: case-insensitive substring match on document name.
           - file_type: exact match on .content fileType ("pdf", "notebook", "epub").
           - tag: exact match on a user-applied tag name from .content.
-        Each entry includes doc_id, name, type, parent, page_count, last_modified (ISO-8601),
-        file_type, document_title, authors, tags, annotated, original_page_count,
-        and size_in_bytes."""
-        return client.list_documents(search=search, file_type=file_type, tag=tag)
+          - parent: direct-child folder filter. None = no filter (default),
+            "" = root-only, "<folder_id>" = direct children of that folder
+            (validated; an unknown id or a non-folder id returns an error).
+        Pagination (applied after filtering):
+          - limit (default 50): maximum entries to return per call.
+          - offset (default 0): zero-based index of the first entry returned.
+        Response includes documents (the page), count (page size), total_count
+        (filtered total), limit, offset, has_more, and parent when filtered.
+        Each document entry includes doc_id, name, type, parent, page_count,
+        last_modified (ISO-8601), file_type, document_title, authors, tags,
+        annotated, original_page_count, and size_in_bytes."""
+        return client.list_documents(
+            search=search,
+            file_type=file_type,
+            tag=tag,
+            parent=parent,
+            limit=limit,
+            offset=offset,
+        )
 
     @mcp.tool()
-    def remarkable_list_folders(search: str | None = None) -> dict:
+    def remarkable_list_folders(
+        search: str | None = None,
+        parent: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict:
         """List folders (CollectionType records) in the reMarkable local cache.
-        Optional case-insensitive substring filter on folder names.
-        Returns folder_id, name, parent (folder id or empty for root), and
-        last_modified (ISO-8601). Use parent ids together with list_documents to
-        navigate folder hierarchies."""
-        return client.list_folders(search=search)
+        Optional filters:
+          - search: case-insensitive substring match on folder names.
+          - parent: direct-child folder filter. None = no filter (default),
+            "" = root-only, "<folder_id>" = direct children of that folder
+            (validated; an unknown id or a non-folder id returns an error).
+        Pagination (applied after filtering):
+          - limit (default 100): maximum entries to return per call.
+          - offset (default 0): zero-based index of the first entry returned.
+        Response includes folders (the page), count (page size), total_count
+        (filtered total), limit, offset, has_more, and parent when filtered.
+        Each folder entry has folder_id, name, parent (folder id or empty for
+        root), and last_modified (ISO-8601). Use parent ids together with
+        list_documents to navigate folder hierarchies."""
+        return client.list_folders(
+            search=search, parent=parent, limit=limit, offset=offset
+        )
 
     @mcp.tool()
-    def remarkable_get_document_info(doc_id: str) -> dict:
+    def remarkable_get_document_info(
+        doc_id: str, include_page_ids: bool = True
+    ) -> dict:
         """Get detailed metadata for a single reMarkable document (folders are rejected).
         Returns doc_id, name, type, parent, last_modified (ISO-8601), last_opened_page,
-        page_count, page_ids, content_format (v1/v2), file_type, document_title, authors,
+        page_count, content_format (v1/v2), file_type, document_title, authors,
         tags, annotated, original_page_count, and size_in_bytes.
+        When include_page_ids=True (default) the response also carries page_ids
+        (the full ordered list of page UUIDs). Set include_page_ids=False on
+        very long documents to drop that list and receive first_page_id and
+        last_page_id instead, keeping the response under MCP per-call budgets.
         Lightweight - reads JSON only, no rendering."""
-        return client.get_document_info(doc_id)
+        return client.get_document_info(doc_id, include_page_ids=include_page_ids)
 
     @mcp.tool()
     def remarkable_render_pages(

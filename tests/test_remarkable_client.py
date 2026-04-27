@@ -140,6 +140,111 @@ class TestListDocuments:
 
 
 # ---------------------------------------------------------------------------
+# list_documents pagination + parent filter
+# ---------------------------------------------------------------------------
+
+
+class TestListDocumentsPagination:
+    @pytest.mark.unit
+    def test_default_includes_pagination_metadata(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents()
+        assert result["count"] == 5
+        assert result["total_count"] == 5
+        assert result["limit"] == 50
+        assert result["offset"] == 0
+        assert result["has_more"] is False
+        assert "parent" not in result
+
+    @pytest.mark.unit
+    def test_limit_truncates_page_and_sets_has_more(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(limit=2)
+        assert result["count"] == 2
+        assert result["total_count"] == 5
+        assert result["limit"] == 2
+        assert result["offset"] == 0
+        assert result["has_more"] is True
+        assert len(result["documents"]) == 2
+
+    @pytest.mark.unit
+    def test_offset_advances_to_disjoint_page(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        first = client.list_documents(limit=2, offset=0)["documents"]
+        second = client.list_documents(limit=2, offset=2)["documents"]
+        first_ids = {d["doc_id"] for d in first}
+        second_ids = {d["doc_id"] for d in second}
+        assert first_ids.isdisjoint(second_ids)
+
+    @pytest.mark.unit
+    def test_offset_past_end_returns_empty_page(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(limit=10, offset=100)
+        assert result["count"] == 0
+        assert result["documents"] == []
+        assert result["total_count"] == 5
+        assert result["has_more"] is False
+
+    @pytest.mark.unit
+    def test_parent_root_filter_excludes_subfolder_docs(self, fake_cache):
+        """parent="" returns only root-level docs; the doc under WORK_FOLDER_ID is excluded."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(parent="")
+        names = {d["name"] for d in result["documents"]}
+        assert "Architecture Sketch" not in names
+        assert result["parent"] == ""
+        assert result["total_count"] == 4
+
+    @pytest.mark.unit
+    def test_parent_folder_filter_returns_direct_children(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(parent=WORK_FOLDER_ID)
+        assert result["count"] == 1
+        assert result["documents"][0]["name"] == "Architecture Sketch"
+        assert result["parent"] == WORK_FOLDER_ID
+
+    @pytest.mark.unit
+    def test_parent_unknown_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(parent="does-not-exist")
+        assert result["error"] is True
+        assert "not found" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_parent_non_folder_returns_error(self, fake_cache):
+        """Filtering by a document id (not a folder) is a hard error."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(parent="aaaa-1111-2222-3333")
+        assert result["error"] is True
+        assert "folder" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_invalid_limit_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(limit=0)
+        assert result["error"] is True
+        assert "limit" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_invalid_offset_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(offset=-1)
+        assert result["error"] is True
+        assert "offset" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_pagination_composes_with_filters(self, fake_cache):
+        """Filters apply before pagination so total_count reflects the filtered set."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_documents(file_type="notebook", limit=2)
+        assert result["total_count"] == 4
+        assert result["count"] == 2
+        assert result["has_more"] is True
+        for doc in result["documents"]:
+            assert doc["file_type"] == "notebook"
+
+
+# ---------------------------------------------------------------------------
 # list_folders
 # ---------------------------------------------------------------------------
 
@@ -183,6 +288,85 @@ class TestListFolders:
         result = client.list_folders()
         assert result["count"] == 0
         assert result["folders"] == []
+
+
+# ---------------------------------------------------------------------------
+# list_folders pagination + parent filter
+# ---------------------------------------------------------------------------
+
+
+class TestListFoldersPagination:
+    @pytest.mark.unit
+    def test_default_includes_pagination_metadata(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders()
+        assert result["count"] == 2
+        assert result["total_count"] == 2
+        assert result["limit"] == 100
+        assert result["offset"] == 0
+        assert result["has_more"] is False
+        assert "parent" not in result
+
+    @pytest.mark.unit
+    def test_limit_truncates_page_and_sets_has_more(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(limit=1)
+        assert result["count"] == 1
+        assert result["total_count"] == 2
+        assert result["has_more"] is True
+
+    @pytest.mark.unit
+    def test_offset_advances_to_disjoint_page(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        first = client.list_folders(limit=1, offset=0)["folders"]
+        second = client.list_folders(limit=1, offset=1)["folders"]
+        assert first[0]["folder_id"] != second[0]["folder_id"]
+
+    @pytest.mark.unit
+    def test_parent_root_filter(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.list_folders(parent="")
+        names = {f["name"] for f in result["folders"]}
+        assert names == {"A", "D"}
+        assert result["total_count"] == 2
+        assert result["parent"] == ""
+
+    @pytest.mark.unit
+    def test_parent_folder_filter_returns_direct_children(self, nested_folder_cache):
+        """B is the only direct child of A; C lives under B and must not appear."""
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.list_folders(parent=NESTED_FOLDER_A)
+        assert result["count"] == 1
+        assert result["folders"][0]["name"] == "B"
+        assert result["parent"] == NESTED_FOLDER_A
+
+    @pytest.mark.unit
+    def test_parent_unknown_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(parent="does-not-exist")
+        assert result["error"] is True
+        assert "not found" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_parent_non_folder_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(parent="aaaa-1111-2222-3333")
+        assert result["error"] is True
+        assert "folder" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_invalid_limit_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(limit=0)
+        assert result["error"] is True
+        assert "limit" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_invalid_offset_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.list_folders(offset=-1)
+        assert result["error"] is True
+        assert "offset" in result["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +428,63 @@ class TestGetDocumentInfo:
         assert result.get("error") is not True
         assert result["name"] == "iOS Transfer"
         assert result["page_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# get_document_info include_page_ids opt-out
+# ---------------------------------------------------------------------------
+
+
+class TestGetDocumentInfoIncludePageIds:
+    @pytest.mark.unit
+    def test_default_includes_full_page_ids(self, fake_cache):
+        """Default behavior must remain backward compatible."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.get_document_info("aaaa-1111-2222-3333")
+        assert result["page_ids"] == ["page-a1", "page-a2", "page-a3"]
+        assert result["page_count"] == 3
+        assert "first_page_id" not in result
+        assert "last_page_id" not in result
+
+    @pytest.mark.unit
+    def test_opt_out_omits_page_ids_and_exposes_endpoints(self, fake_cache):
+        """include_page_ids=False drops the array but keeps page_count + endpoints."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.get_document_info(
+            "aaaa-1111-2222-3333", include_page_ids=False
+        )
+        assert "page_ids" not in result
+        assert result["page_count"] == 3
+        assert result["first_page_id"] == "page-a1"
+        assert result["last_page_id"] == "page-a3"
+
+    @pytest.mark.unit
+    def test_opt_out_on_empty_document_returns_none_endpoints(self, tmp_path):
+        """An empty cPages list yields None for first_page_id and last_page_id."""
+        metadata = {
+            "type": "DocumentType",
+            "visibleName": "No Pages",
+            "parent": "",
+            "lastModified": "1709500000000",
+        }
+        content = {
+            "fileType": "notebook",
+            "formatVersion": 2,
+            "cPages": {"pages": []},
+            "documentMetadata": {},
+            "extraMetadata": {},
+            "tags": [],
+            "pageCount": 0,
+            "originalPageCount": -1,
+            "sizeInBytes": "0",
+        }
+        (tmp_path / "no-pages.metadata").write_text(json.dumps(metadata))
+        (tmp_path / "no-pages.content").write_text(json.dumps(content))
+        client = RemarkableClient(base_path=tmp_path)
+        result = client.get_document_info("no-pages", include_page_ids=False)
+        assert result["page_count"] == 0
+        assert result["first_page_id"] is None
+        assert result["last_page_id"] is None
 
 
 # ---------------------------------------------------------------------------

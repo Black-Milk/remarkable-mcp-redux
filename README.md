@@ -140,6 +140,13 @@ uv sync
 
 Add the server to your Claude Code MCP configuration. See `mcp.example.json` for the full template, or add this to your `.mcp.json`:
 
+If you have [`just`](https://just.systems/) installed, generate a config entry
+with your local checkout path already filled in:
+
+```bash
+just mcp-config
+```
+
 ```json
 {
   "mcpServers": {

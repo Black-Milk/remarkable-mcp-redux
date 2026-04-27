@@ -59,11 +59,16 @@ class TestToolResponseShapes:
 
     @pytest.mark.integration
     def test_list_documents_shape(self):
-        """remarkable_list_documents should return documents list and count."""
+        """remarkable_list_documents should return documents list, count, and pagination metadata."""
         result = client.list_documents()
         assert "documents" in result
         assert "count" in result
+        assert "total_count" in result
+        assert "limit" in result
+        assert "offset" in result
+        assert "has_more" in result
         assert isinstance(result["documents"], list)
+        assert isinstance(result["has_more"], bool)
 
     @pytest.mark.integration
     def test_get_document_info_missing(self):
@@ -81,11 +86,16 @@ class TestToolResponseShapes:
 
     @pytest.mark.integration
     def test_list_folders_shape(self):
-        """remarkable_list_folders should return folders list and count."""
+        """remarkable_list_folders should return folders list, count, and pagination metadata."""
         result = client.list_folders()
         assert "folders" in result
         assert "count" in result
+        assert "total_count" in result
+        assert "limit" in result
+        assert "offset" in result
+        assert "has_more" in result
         assert isinstance(result["folders"], list)
+        assert isinstance(result["has_more"], bool)
 
 
 class TestWriteToolGating:
