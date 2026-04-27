@@ -10,6 +10,17 @@ import pytest
 WORK_FOLDER_ID = "ffff-folder-work"
 PERSONAL_FOLDER_ID = "ffff-folder-personal"
 
+# Trashed and pinned doc ids for write-path tests
+TRASHED_DOC_ID = "tttt-trashed-doc"
+PINNED_DOC_ID = "pppp-pinned-doc"
+
+# Nested-folder fixture ids: A > B > C (linear) plus sibling D under root
+NESTED_FOLDER_A = "nest-a"
+NESTED_FOLDER_B = "nest-b"
+NESTED_FOLDER_C = "nest-c"
+NESTED_FOLDER_D = "nest-d"
+NESTED_DOC_INSIDE_C = "nest-doc-c"
+
 
 @pytest.fixture
 def fake_cache(tmp_path):
@@ -24,6 +35,8 @@ def fake_cache(tmp_path):
       Morning Journal      - notebook, no embedded title, has user tag
       Architecture Sketch  - PDF with embedded title and authors, annotated
       Empty Notebook       - notebook with one page id but no .rm files
+      Trashed Note         - deleted=True (used to test write-tool refusals)
+      Pinned Reference     - pinned=True (used to test pin/unpin round-trips)
 
     Folders:
       Work                 - root folder
@@ -88,6 +101,68 @@ def fake_cache(tmp_path):
         size_in_bytes="0",
     )
 
+    _create_document(
+        tmp_path,
+        doc_id=TRASHED_DOC_ID,
+        name="Trashed Note",
+        page_ids=["page-trashed"],
+        content_format="v2",
+        last_modified="1709200000000",
+        file_type="notebook",
+        original_page_count=-1,
+        size_in_bytes="50",
+        deleted=True,
+    )
+
+    _create_document(
+        tmp_path,
+        doc_id=PINNED_DOC_ID,
+        name="Pinned Reference",
+        page_ids=["page-pinned"],
+        content_format="v2",
+        last_modified="1709100000000",
+        file_type="notebook",
+        original_page_count=-1,
+        size_in_bytes="25",
+        pinned=True,
+    )
+
+    return tmp_path
+
+
+@pytest.fixture
+def nested_folder_cache(tmp_path):
+    """Cache with a linear A>B>C folder chain plus a sibling D under root.
+
+    Layout:
+        root
+          ├── A (NESTED_FOLDER_A)
+          │     └── B (NESTED_FOLDER_B)
+          │           └── C (NESTED_FOLDER_C)
+          │                 └── doc (NESTED_DOC_INSIDE_C)
+          └── D (NESTED_FOLDER_D)
+
+    Used by ancestry, descendant-counting, and sibling-uniqueness tests.
+    """
+    _create_folder(tmp_path, folder_id=NESTED_FOLDER_A, name="A", parent="")
+    _create_folder(
+        tmp_path, folder_id=NESTED_FOLDER_B, name="B", parent=NESTED_FOLDER_A
+    )
+    _create_folder(
+        tmp_path, folder_id=NESTED_FOLDER_C, name="C", parent=NESTED_FOLDER_B
+    )
+    _create_folder(tmp_path, folder_id=NESTED_FOLDER_D, name="D", parent="")
+    _create_document(
+        tmp_path,
+        doc_id=NESTED_DOC_INSIDE_C,
+        name="Doc inside C",
+        page_ids=["nested-page-1"],
+        content_format="v2",
+        parent=NESTED_FOLDER_C,
+        file_type="notebook",
+        original_page_count=-1,
+        size_in_bytes="100",
+    )
     return tmp_path
 
 
@@ -146,6 +221,8 @@ def _create_folder(
     name: str,
     parent: str = "",
     last_modified: str = "1709500000000",
+    deleted: bool = False,
+    pinned: bool = False,
 ) -> None:
     """Helper to create a synthetic CollectionType folder record."""
     metadata = {
@@ -153,14 +230,16 @@ def _create_folder(
         "visibleName": name,
         "parent": parent,
         "lastModified": last_modified,
-        "deleted": False,
-        "pinned": False,
+        "deleted": deleted,
+        "pinned": pinned,
         "metadatamodified": False,
         "modified": False,
         "synced": True,
         "version": 1,
     }
     (base_path / f"{folder_id}.metadata").write_text(json.dumps(metadata))
+    content: dict = {}
+    (base_path / f"{folder_id}.content").write_text(json.dumps(content))
 
 
 def _create_document(
@@ -179,6 +258,8 @@ def _create_document(
     extra_metadata: dict | None = None,
     original_page_count: int = -1,
     size_in_bytes: str = "0",
+    deleted: bool = False,
+    pinned: bool = False,
 ) -> None:
     """Helper to create a synthetic DocumentType record with .metadata and .content files."""
     metadata = {
@@ -186,10 +267,10 @@ def _create_document(
         "visibleName": name,
         "parent": parent,
         "lastModified": last_modified,
-        "deleted": False,
+        "deleted": deleted,
         "metadatamodified": False,
         "modified": False,
-        "pinned": False,
+        "pinned": pinned,
         "synced": True,
         "version": 1,
     }

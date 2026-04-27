@@ -118,3 +118,45 @@ class RemarkableCache:
         if meta is None:
             return doc_id
         return meta.visible_name or doc_id
+
+    def is_descendant_of(self, candidate_id: str, ancestor_id: str) -> bool:
+        """True if ``candidate_id`` sits anywhere in ``ancestor_id``'s parent chain.
+
+        Walks the parent links upward from ``candidate_id`` with a visited-set so
+        a malformed cycle in the cache cannot loop forever. Returns False if any
+        link in the chain is missing, or if the chain reaches the root without
+        encountering ``ancestor_id``. A node is treated as a descendant of itself
+        (i.e. ``is_descendant_of(x, x)`` is True), which matches the cycle-prevention
+        semantics callers want: "is this proposed parent already in the subtree?"
+        """
+        if candidate_id == ancestor_id:
+            return True
+        visited: set[str] = set()
+        current = candidate_id
+        while current and current not in visited:
+            visited.add(current)
+            meta = self.load_metadata(current)
+            if meta is None:
+                return False
+            parent = meta.parent or ""
+            if parent == ancestor_id:
+                return True
+            current = parent
+        return False
+
+    def count_descendants(self, ancestor_id: str) -> int:
+        """Count records whose parent chain passes through ``ancestor_id``.
+
+        Used by folder-move to surface a blast-radius count in the response.
+        Cycle-safe: each candidate is walked with its own visited-set via
+        ``is_descendant_of``. Excludes ``ancestor_id`` itself.
+        """
+        if not ancestor_id:
+            return 0
+        count = 0
+        for child_id, _ in self.iter_metadata():
+            if child_id == ancestor_id:
+                continue
+            if self.is_descendant_of(child_id, ancestor_id):
+                count += 1
+        return count

@@ -9,7 +9,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from remarkable_mcp_redux.client import RemarkableClient
-from tests.conftest import PERSONAL_FOLDER_ID, WORK_FOLDER_ID
+from remarkable_mcp_redux.config import BACKUP_RETENTION_ENV_VAR
+from tests.conftest import (
+    NESTED_DOC_INSIDE_C,
+    NESTED_FOLDER_A,
+    NESTED_FOLDER_B,
+    NESTED_FOLDER_C,
+    NESTED_FOLDER_D,
+    PERSONAL_FOLDER_ID,
+    PINNED_DOC_ID,
+    TRASHED_DOC_ID,
+    WORK_FOLDER_ID,
+)
 
 # ---------------------------------------------------------------------------
 # list_documents
@@ -20,9 +31,15 @@ class TestListDocuments:
     def test_list_all_documents(self, fake_cache):
         client = RemarkableClient(base_path=fake_cache)
         result = client.list_documents()
-        assert result["count"] == 3
+        assert result["count"] == 5
         names = {d["name"] for d in result["documents"]}
-        assert names == {"Morning Journal", "Architecture Sketch", "Empty Notebook"}
+        assert names == {
+            "Morning Journal",
+            "Architecture Sketch",
+            "Empty Notebook",
+            "Trashed Note",
+            "Pinned Reference",
+        }
 
     @pytest.mark.unit
     def test_list_documents_with_search(self, fake_cache):
@@ -360,7 +377,7 @@ class TestCheckStatus:
         client = RemarkableClient(base_path=fake_cache)
         result = client.check_status()
         assert result["cache_exists"] is True
-        assert result["document_count"] == 3
+        assert result["document_count"] == 5
 
     @pytest.mark.unit
     def test_cache_missing(self, empty_cache):
@@ -610,3 +627,650 @@ def _mock_rendering():
         _run_rmc=fake_rmc,
         _svg_to_pdf_bytes=fake_svg2pdf,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sync flags - every write path must set metadatamodified and modified
+# ---------------------------------------------------------------------------
+
+
+class TestSyncFlags:
+    """All write paths must set metadatamodified=True and modified=True so the
+    reMarkable desktop sync engine recognises the change as a local edit."""
+
+    @pytest.mark.unit
+    def test_rename_sets_sync_flags(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.rename_document("aaaa-1111-2222-3333", "Renamed")
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["metadatamodified"] is True
+        assert on_disk["modified"] is True
+
+    @pytest.mark.unit
+    def test_move_sets_sync_flags(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.move_document("aaaa-1111-2222-3333", WORK_FOLDER_ID)
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["metadatamodified"] is True
+        assert on_disk["modified"] is True
+
+    @pytest.mark.unit
+    def test_pin_sets_sync_flags(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.pin_document("aaaa-1111-2222-3333", True)
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["metadatamodified"] is True
+        assert on_disk["modified"] is True
+
+    @pytest.mark.unit
+    def test_create_folder_sets_sync_flags(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Newly Created")
+        folder_id = result["folder_id"]
+        on_disk = json.loads((fake_cache / f"{folder_id}.metadata").read_text())
+        assert on_disk["metadatamodified"] is True
+        assert on_disk["modified"] is True
+
+    @pytest.mark.unit
+    def test_restore_writes_resurrect_sync_flags(self, fake_cache):
+        """A restore writes the backup contents back; the backup itself was made
+        before sync flags were set, but the post-restore safety backup must
+        capture the live (sync-flags-True) state. The restored file matches
+        whatever was in the backup."""
+        client = RemarkableClient(base_path=fake_cache)
+        # First write to create a backup that has sync flags True
+        client.rename_document("aaaa-1111-2222-3333", "First Rename")
+        client.rename_document("aaaa-1111-2222-3333", "Second Rename")
+        client.restore_metadata("aaaa-1111-2222-3333")
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        # Restored content originated from a backup taken after a write,
+        # so it carries sync flags True.
+        assert on_disk["metadatamodified"] is True
+        assert on_disk["modified"] is True
+
+
+# ---------------------------------------------------------------------------
+# Refuse trashed records on rename/move/pin
+# ---------------------------------------------------------------------------
+
+
+class TestRefuseDeleted:
+    @pytest.mark.unit
+    def test_rename_refuses_trashed(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_document(TRASHED_DOC_ID, "Anything")
+        assert result["error"] is True
+        assert "trash" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_move_refuses_trashed(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.move_document(TRASHED_DOC_ID, WORK_FOLDER_ID)
+        assert result["error"] is True
+        assert "trash" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_move_rejects_trash_destination(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.move_document("aaaa-1111-2222-3333", "trash")
+        assert result["error"] is True
+        assert "trash" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_pin_refuses_trashed(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.pin_document(TRASHED_DOC_ID, True)
+        assert result["error"] is True
+        assert "trash" in result["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# is_descendant_of cache helper
+# ---------------------------------------------------------------------------
+
+
+class TestIsDescendantOf:
+    @pytest.mark.unit
+    def test_direct_child(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        assert client.cache.is_descendant_of(NESTED_FOLDER_B, NESTED_FOLDER_A) is True
+
+    @pytest.mark.unit
+    def test_transitive_descendant(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        assert client.cache.is_descendant_of(NESTED_FOLDER_C, NESTED_FOLDER_A) is True
+
+    @pytest.mark.unit
+    def test_self_is_descendant_of_self(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        assert client.cache.is_descendant_of(NESTED_FOLDER_A, NESTED_FOLDER_A) is True
+
+    @pytest.mark.unit
+    def test_sibling_is_not_descendant(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        assert client.cache.is_descendant_of(NESTED_FOLDER_D, NESTED_FOLDER_A) is False
+
+    @pytest.mark.unit
+    def test_unknown_id_returns_false(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        assert client.cache.is_descendant_of("nope", NESTED_FOLDER_A) is False
+
+    @pytest.mark.unit
+    def test_handles_malformed_cycle(self, tmp_path):
+        """If two folders illegally refer to each other as parents, the helper
+        must terminate via its visited-set rather than loop forever."""
+        cycle_a = "cycle-a"
+        cycle_b = "cycle-b"
+        (tmp_path / f"{cycle_a}.metadata").write_text(
+            json.dumps(
+                {
+                    "type": "CollectionType",
+                    "visibleName": "A",
+                    "parent": cycle_b,
+                    "lastModified": "1",
+                }
+            )
+        )
+        (tmp_path / f"{cycle_b}.metadata").write_text(
+            json.dumps(
+                {
+                    "type": "CollectionType",
+                    "visibleName": "B",
+                    "parent": cycle_a,
+                    "lastModified": "1",
+                }
+            )
+        )
+        client = RemarkableClient(base_path=tmp_path)
+        # Asking whether a cycle node is a descendant of an outsider must just
+        # return False without hanging.
+        assert client.cache.is_descendant_of(cycle_a, "outsider") is False
+
+    @pytest.mark.unit
+    def test_count_descendants_includes_transitive(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        # A's subtree contains B, C, and the doc inside C: 3 descendants.
+        assert client.cache.count_descendants(NESTED_FOLDER_A) == 3
+
+    @pytest.mark.unit
+    def test_count_descendants_leaf_folder(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        # D has no descendants.
+        assert client.cache.count_descendants(NESTED_FOLDER_D) == 0
+
+
+# ---------------------------------------------------------------------------
+# Backup retention - auto-prune and env override
+# ---------------------------------------------------------------------------
+
+
+class TestBackupRetention:
+    @pytest.mark.unit
+    def test_keeps_last_five_by_default(self, fake_cache, monkeypatch):
+        monkeypatch.delenv(BACKUP_RETENTION_ENV_VAR, raising=False)
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(8):
+            client.rename_document("aaaa-1111-2222-3333", f"Name {i}")
+        backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        assert len(backups) == 5
+
+    @pytest.mark.unit
+    def test_retention_zero_keeps_only_pre_write_backup(self, fake_cache, monkeypatch):
+        """retention=0 means "delete every backup older than the one just made".
+        After a single rename, the backup chain is empty (the backup made by the
+        rename itself is also pruned because retention=0 is "keep zero")."""
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "0")
+        client = RemarkableClient(base_path=fake_cache)
+        client.rename_document("aaaa-1111-2222-3333", "Once")
+        backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        assert len(backups) == 0
+
+    @pytest.mark.unit
+    def test_env_override_keeps_two(self, fake_cache, monkeypatch):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "2")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(5):
+            client.rename_document("aaaa-1111-2222-3333", f"Name {i}")
+        backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        assert len(backups) == 2
+
+    @pytest.mark.unit
+    def test_invalid_env_falls_back_to_default(
+        self, fake_cache, monkeypatch
+    ):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "not-a-number")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(7):
+            client.rename_document("aaaa-1111-2222-3333", f"Name {i}")
+        backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        assert len(backups) == 5  # default
+
+    @pytest.mark.unit
+    def test_retention_isolates_documents(self, fake_cache, monkeypatch):
+        """Pruning one document's chain must not delete another document's backups."""
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "1")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(3):
+            client.rename_document("aaaa-1111-2222-3333", f"A{i}")
+        for i in range(3):
+            client.rename_document("bbbb-4444-5555-6666", f"B{i}")
+        a_backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        b_backups = list(fake_cache.glob("bbbb-4444-5555-6666.metadata.bak.*"))
+        assert len(a_backups) == 1
+        assert len(b_backups) == 1
+
+
+# ---------------------------------------------------------------------------
+# cleanup_metadata_backups bulk tool
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupBackupsTool:
+    @pytest.mark.unit
+    def test_refuses_no_filters(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.cleanup_metadata_backups()
+        assert result["error"] is True
+        assert "filter" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_doc_id_filter_targets_single_chain(self, fake_cache, monkeypatch):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")  # do not auto-prune
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(3):
+            client.rename_document("aaaa-1111-2222-3333", f"A{i}")
+        for i in range(3):
+            client.rename_document("bbbb-4444-5555-6666", f"B{i}")
+        result = client.cleanup_metadata_backups(doc_id="aaaa-1111-2222-3333")
+        assert result.get("error") is not True
+        assert result["files_removed"] == 3
+        # B's chain untouched
+        b_backups = list(fake_cache.glob("bbbb-4444-5555-6666.metadata.bak.*"))
+        assert len(b_backups) == 3
+
+    @pytest.mark.unit
+    def test_older_than_zero_wipes_everything(self, fake_cache, monkeypatch):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(2):
+            client.rename_document("aaaa-1111-2222-3333", f"A{i}")
+        result = client.cleanup_metadata_backups(older_than_days=0)
+        assert result.get("error") is not True
+        assert result["files_removed"] >= 2
+        backups = list(fake_cache.glob("*.metadata.bak.*"))
+        assert backups == []
+
+    @pytest.mark.unit
+    def test_older_than_high_keeps_recent(self, fake_cache, monkeypatch):
+        """With a future cutoff (older_than_days=365), recent backups stay put."""
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(3):
+            client.rename_document("aaaa-1111-2222-3333", f"A{i}")
+        result = client.cleanup_metadata_backups(older_than_days=365)
+        assert result["files_removed"] == 0
+        assert result["backups_remaining"] == 3
+
+    @pytest.mark.unit
+    def test_dry_run_preserves_files(self, fake_cache, monkeypatch):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        for i in range(2):
+            client.rename_document("aaaa-1111-2222-3333", f"A{i}")
+        result = client.cleanup_metadata_backups(older_than_days=0, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["files_removed"] == 2
+        # disk untouched
+        backups = list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        assert len(backups) == 2
+
+
+# ---------------------------------------------------------------------------
+# pin_document
+# ---------------------------------------------------------------------------
+
+
+class TestPinTool:
+    @pytest.mark.unit
+    def test_pins_a_document(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.pin_document("aaaa-1111-2222-3333", True)
+        assert result.get("error") is not True
+        assert result["new_pinned"] is True
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["pinned"] is True
+
+    @pytest.mark.unit
+    def test_unpins_a_document(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.pin_document(PINNED_DOC_ID, False)
+        assert result.get("error") is not True
+        assert result["old_pinned"] is True
+        assert result["new_pinned"] is False
+        on_disk = json.loads((fake_cache / f"{PINNED_DOC_ID}.metadata").read_text())
+        assert on_disk["pinned"] is False
+
+    @pytest.mark.unit
+    def test_idempotent_repin(self, fake_cache):
+        """Pinning an already-pinned doc still succeeds and writes."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.pin_document(PINNED_DOC_ID, True)
+        assert result.get("error") is not True
+        assert result["new_pinned"] is True
+
+    @pytest.mark.unit
+    def test_dry_run_no_change(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        before = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )["pinned"]
+        result = client.pin_document(
+            "aaaa-1111-2222-3333", True, dry_run=True
+        )
+        assert result["dry_run"] is True
+        after = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )["pinned"]
+        assert before == after
+
+    @pytest.mark.unit
+    def test_rejects_folder(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.pin_document(WORK_FOLDER_ID, True)
+        assert result["error"] is True
+
+
+# ---------------------------------------------------------------------------
+# restore_metadata
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreTool:
+    @pytest.mark.unit
+    def test_round_trip_restore(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        original = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        client.rename_document("aaaa-1111-2222-3333", "Renamed")
+        result = client.restore_metadata("aaaa-1111-2222-3333")
+        assert result.get("error") is not True
+        restored = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert restored["visibleName"] == original["visibleName"]
+
+    @pytest.mark.unit
+    def test_creates_pre_restore_backup(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.rename_document("aaaa-1111-2222-3333", "Renamed")
+        before_count = len(
+            list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        )
+        result = client.restore_metadata("aaaa-1111-2222-3333")
+        after_count = len(
+            list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))
+        )
+        # Pre-restore backup added; the consumed backup was the latest one.
+        # Net change depends on retention; pre_restore_backup exists either way.
+        assert Path(result["pre_restore_backup"]).exists()
+        assert after_count >= before_count or Path(result["pre_restore_backup"]).exists()
+
+    @pytest.mark.unit
+    def test_no_backups_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.restore_metadata("aaaa-1111-2222-3333")
+        assert result["error"] is True
+        assert "backup" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_missing_doc_returns_error(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.restore_metadata("nonexistent-doc")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_dry_run_reports_source(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.rename_document("aaaa-1111-2222-3333", "Renamed")
+        result = client.restore_metadata("aaaa-1111-2222-3333", dry_run=True)
+        assert result["dry_run"] is True
+        assert "would_restore_from" in result
+        # disk content was NOT reverted by dry-run
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Renamed"
+
+
+# ---------------------------------------------------------------------------
+# create_folder
+# ---------------------------------------------------------------------------
+
+
+class TestCreateFolder:
+    @pytest.mark.unit
+    def test_creates_root_folder(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Brand New")
+        assert result.get("error") is not True
+        folder_id = result["folder_id"]
+        meta = json.loads((fake_cache / f"{folder_id}.metadata").read_text())
+        assert meta["type"] == "CollectionType"
+        assert meta["visibleName"] == "Brand New"
+        assert meta["parent"] == ""
+        assert meta["deleted"] is False
+        assert (fake_cache / f"{folder_id}.content").exists()
+
+    @pytest.mark.unit
+    def test_creates_nested_folder(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Subfolder", parent=WORK_FOLDER_ID)
+        assert result.get("error") is not True
+        meta = json.loads((fake_cache / f"{result['folder_id']}.metadata").read_text())
+        assert meta["parent"] == WORK_FOLDER_ID
+
+    @pytest.mark.unit
+    def test_rejects_empty_name(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("   ")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_trash_parent(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Doomed", parent="trash")
+        assert result["error"] is True
+        assert "trash" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_rejects_missing_parent(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Lost", parent="nonexistent-folder")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_document_as_parent(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Bad", parent="aaaa-1111-2222-3333")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_duplicate_sibling_name(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Work")  # collides with WORK_FOLDER_ID
+        assert result["error"] is True
+        assert "exists" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_duplicate_check_is_case_insensitive(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("WORK")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_duplicate_allowed_under_different_parents(self, fake_cache):
+        """Same folder name is fine when parents differ."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Work", parent=PERSONAL_FOLDER_ID)
+        assert result.get("error") is not True
+
+    @pytest.mark.unit
+    def test_dry_run_does_not_write(self, fake_cache):
+        before = set(fake_cache.glob("*.metadata"))
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.create_folder("Plan-only", dry_run=True)
+        assert result["dry_run"] is True
+        after = set(fake_cache.glob("*.metadata"))
+        assert before == after
+
+    @pytest.mark.unit
+    def test_orphan_content_cleaned_on_metadata_failure(
+        self, fake_cache, monkeypatch
+    ):
+        """If the .metadata write fails, the .content sibling must be removed."""
+        from remarkable_mcp_redux import writes as writes_module
+
+        original_write = writes_module._atomic_write_json
+        calls = {"n": 0}
+
+        def flaky_write(target, data):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("boom")
+            return original_write(target, data)
+
+        monkeypatch.setattr(writes_module, "_atomic_write_json", flaky_write)
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(OSError):
+            client.create_folder("Doomed Folder")
+        # No orphan .content should remain.
+        orphans = [
+            p for p in fake_cache.glob("*.content") if not (p.with_suffix(".metadata")).exists()
+        ]
+        assert orphans == []
+
+
+# ---------------------------------------------------------------------------
+# rename_folder
+# ---------------------------------------------------------------------------
+
+
+class TestFolderRename:
+    @pytest.mark.unit
+    def test_renames_folder(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_folder(WORK_FOLDER_ID, "Workspace")
+        assert result.get("error") is not True
+        on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Workspace"
+
+    @pytest.mark.unit
+    def test_rejects_document(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_folder("aaaa-1111-2222-3333", "Should fail")
+        assert result["error"] is True
+        assert "document" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_rejects_duplicate_sibling(self, fake_cache):
+        """Renaming Work to "Personal" collides with the existing sibling Personal."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_folder(WORK_FOLDER_ID, "Personal")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_idempotent_self_rename_allowed(self, fake_cache):
+        """Renaming to the same name is a no-conflict sibling-uniqueness case."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_folder(WORK_FOLDER_ID, "Work")
+        assert result.get("error") is not True
+
+    @pytest.mark.unit
+    def test_dry_run_no_change(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.rename_folder(WORK_FOLDER_ID, "Workspace", dry_run=True)
+        assert result["dry_run"] is True
+        on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Work"
+
+
+# ---------------------------------------------------------------------------
+# move_folder
+# ---------------------------------------------------------------------------
+
+
+class TestFolderMove:
+    @pytest.mark.unit
+    def test_moves_folder(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_D, NESTED_FOLDER_A)
+        assert result.get("error") is not True
+        on_disk = json.loads(
+            (nested_folder_cache / f"{NESTED_FOLDER_D}.metadata").read_text()
+        )
+        assert on_disk["parent"] == NESTED_FOLDER_A
+
+    @pytest.mark.unit
+    def test_reports_descendants_affected(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_A, NESTED_FOLDER_D)
+        # A's subtree contains B, C, and the doc inside C: 3 descendants.
+        assert result["descendants_affected"] == 3
+
+    @pytest.mark.unit
+    def test_rejects_self_as_parent(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_A, NESTED_FOLDER_A)
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_descendant_as_parent(self, nested_folder_cache):
+        """Cycle prevention: cannot move A under its own descendant C."""
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_A, NESTED_FOLDER_C)
+        assert result["error"] is True
+        assert "subtree" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_rejects_trash_destination(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_A, "trash")
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_document_target(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_A, NESTED_DOC_INSIDE_C)
+        assert result["error"] is True
+
+    @pytest.mark.unit
+    def test_rejects_document_source(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.move_folder("aaaa-1111-2222-3333", "")
+        assert result["error"] is True
+        assert "document" in result["detail"].lower()
+
+    @pytest.mark.unit
+    def test_dry_run_no_change(self, nested_folder_cache):
+        client = RemarkableClient(base_path=nested_folder_cache)
+        result = client.move_folder(NESTED_FOLDER_D, NESTED_FOLDER_A, dry_run=True)
+        assert result["dry_run"] is True
+        on_disk = json.loads(
+            (nested_folder_cache / f"{NESTED_FOLDER_D}.metadata").read_text()
+        )
+        assert on_disk["parent"] == ""

@@ -50,7 +50,7 @@ def _exchange(proc, message: dict) -> dict:
 class TestE2EStdio:
     @pytest.mark.e2e
     def test_initialize_and_list_tools(self):
-        """Server should respond to initialize and list its 6 tools."""
+        """Server should respond to initialize and list its 7 read-only tools by default."""
         proc = _start_server()
         try:
             # Initialize
@@ -87,7 +87,60 @@ class TestE2EStdio:
             assert "remarkable_render_document" in tool_names
             assert "remarkable_get_document_info" in tool_names
             assert "remarkable_cleanup_renders" in tool_names
+            # Write tools must NOT be present without the env flag
+            assert "remarkable_rename_document" not in tool_names
+            assert "remarkable_create_folder" not in tool_names
             assert len(tool_names) == 7
+        finally:
+            proc.terminate()
+            proc.wait()
+
+    @pytest.mark.e2e
+    def test_write_tools_listed_when_enabled(self):
+        """With REMARKABLE_ENABLE_WRITE_TOOLS=true, all 8 write tools register."""
+        env = {**ENV, "REMARKABLE_ENABLE_WRITE_TOOLS": "true"}
+        proc = subprocess.Popen(
+            ["uv", "run", "remarkable-mcp"],
+            cwd=SERVER_DIR,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        try:
+            _exchange(proc, {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "0.1"},
+                },
+            })
+            proc.stdin.write(
+                (json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n").encode()
+            )
+            proc.stdin.flush()
+
+            tools_resp = _exchange(proc, {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+            })
+            tool_names = [t["name"] for t in tools_resp["result"]["tools"]]
+            for name in (
+                "remarkable_rename_document",
+                "remarkable_rename_folder",
+                "remarkable_move_document",
+                "remarkable_move_folder",
+                "remarkable_create_folder",
+                "remarkable_pin_document",
+                "remarkable_restore_metadata",
+                "remarkable_cleanup_metadata_backups",
+            ):
+                assert name in tool_names, f"Missing write tool: {name}"
+            assert len(tool_names) == 15  # 7 read + 8 write
         finally:
             proc.terminate()
             proc.wait()

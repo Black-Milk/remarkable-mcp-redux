@@ -15,6 +15,8 @@ DEFAULT_RENDER_DIR = Path("/tmp/remarkable-renders")
 
 
 WRITE_TOOLS_ENV_VAR = "REMARKABLE_ENABLE_WRITE_TOOLS"
+BACKUP_RETENTION_ENV_VAR = "REMARKABLE_BACKUP_RETENTION_COUNT"
+DEFAULT_BACKUP_RETENTION = 5
 
 
 def ensure_cairo_library_path() -> None:
@@ -35,3 +37,21 @@ def is_write_tools_enabled() -> bool:
     """
     val = os.environ.get(WRITE_TOOLS_ENV_VAR, "").strip().lower()
     return val in ("1", "true", "yes", "on")
+
+
+def backup_retention_count() -> int:
+    """How many .metadata.bak.* siblings to retain per document. Default 5.
+
+    Negative or non-integer env values fall back to the default. A value of 0
+    means "delete every backup older than the one just created" - the live
+    write still creates a backup before the atomic replace, so this never
+    blocks the rollback-on-write path; it only prunes prior generations.
+    """
+    raw = os.environ.get(BACKUP_RETENTION_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_BACKUP_RETENTION
+    try:
+        n = int(raw)
+    except ValueError:
+        return DEFAULT_BACKUP_RETENTION
+    return n if n >= 0 else DEFAULT_BACKUP_RETENTION

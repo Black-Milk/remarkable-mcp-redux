@@ -15,7 +15,12 @@ from .schemas import (
     ContentMetadata,
     DocumentMetadata,
 )
-from .writes import MetadataWriter
+from .writes import (
+    MetadataCreator,
+    MetadataRestorer,
+    MetadataWriter,
+    cleanup_backups,
+)
 
 
 class RemarkableClient:
@@ -210,46 +215,25 @@ class RemarkableClient:
     ) -> dict:
         """Rename a document by mutating its .metadata visibleName field.
 
-        Validates target doc_id exists and is DocumentType. Refuses empty names.
+        Validates target doc_id exists and is DocumentType. Refuses empty names
+        and trashed records (records with deleted=True).
         In dry_run mode, returns the planned change without writing anything.
         Otherwise writes atomically and returns the timestamped backup path.
         """
-        cleaned_name = (new_name or "").strip()
-        if not cleaned_name:
-            return {"error": True, "detail": "new_name must be a non-empty string"}
+        return self._rename_record(doc_id, new_name, expected_kind="document", dry_run=dry_run)
 
-        meta = self.cache.load_metadata(doc_id)
-        if meta is None:
-            return {"error": True, "detail": f"Document not found: {doc_id}"}
-        if isinstance(meta, CollectionMetadata):
-            return {
-                "error": True,
-                "detail": (
-                    f"{doc_id} is a folder (CollectionType); "
-                    "folder rename is not supported by this tool"
-                ),
-            }
+    def rename_folder(
+        self,
+        folder_id: str,
+        new_name: str,
+        dry_run: bool = False,
+    ) -> dict:
+        """Rename a folder by mutating its .metadata visibleName field.
 
-        old_name = meta.visible_name or doc_id
-        if dry_run:
-            return {
-                "doc_id": doc_id,
-                "dry_run": True,
-                "old_name": old_name,
-                "new_name": cleaned_name,
-            }
-
-        writer = MetadataWriter(self.base_path)
-        _old, _new, backup = writer.update_metadata(
-            doc_id, {"visibleName": cleaned_name}
-        )
-        return {
-            "doc_id": doc_id,
-            "dry_run": False,
-            "old_name": old_name,
-            "new_name": cleaned_name,
-            "backup_path": str(backup),
-        }
+        Validates target folder_id exists and is CollectionType. Refuses empty
+        names and trashed records.
+        """
+        return self._rename_record(folder_id, new_name, expected_kind="folder", dry_run=dry_run)
 
     def move_document(
         self,
@@ -260,8 +244,43 @@ class RemarkableClient:
         """Move a document to a different folder by mutating .metadata parent.
 
         new_parent must be either "" (root) or an existing CollectionType folder id.
-        Refuses targets that are documents, missing, or the doc itself.
-        In dry_run mode, returns the planned change without writing anything.
+        Refuses trashed records, the trash sentinel as a destination, targets that
+        are documents, missing targets, or the doc itself. Also runs a cycle
+        check via cache.is_descendant_of.
+        """
+        return self._move_record(doc_id, new_parent, expected_kind="document", dry_run=dry_run)
+
+    def move_folder(
+        self,
+        folder_id: str,
+        new_parent: str,
+        dry_run: bool = False,
+    ) -> dict:
+        """Move a folder to a different parent by mutating .metadata parent.
+
+        Same validation as move_document plus a cycle check that prevents moving
+        a folder into its own subtree. Response includes ``descendants_affected``
+        - the number of records (folders or documents) whose parent chain passes
+        through this folder, so callers can see the blast radius before confirming.
+        """
+        result = self._move_record(
+            folder_id, new_parent, expected_kind="folder", dry_run=dry_run
+        )
+        if not result.get("error"):
+            result["descendants_affected"] = self.cache.count_descendants(folder_id)
+        return result
+
+    def pin_document(
+        self,
+        doc_id: str,
+        pinned: bool,
+        dry_run: bool = False,
+    ) -> dict:
+        """Set or clear the ``pinned`` flag on a document.
+
+        Refuses CollectionType records and trashed records. ``dry_run`` returns
+        the would-be change without writing. Successful writes return the
+        backup path and the boolean that was set.
         """
         meta = self.cache.load_metadata(doc_id)
         if meta is None:
@@ -271,11 +290,302 @@ class RemarkableClient:
                 "error": True,
                 "detail": (
                     f"{doc_id} is a folder (CollectionType); "
-                    "folder moves are not supported by this tool"
+                    "pinning folders is not supported by this tool"
                 ),
             }
-        if new_parent == doc_id:
-            return {"error": True, "detail": "Cannot move a document into itself"}
+        if meta.deleted:
+            return {
+                "error": True,
+                "detail": (
+                    f"{doc_id} is in the trash (deleted=True); "
+                    "restore it from the reMarkable app before pinning"
+                ),
+            }
+
+        old_pinned = bool(meta.pinned)
+        if dry_run:
+            return {
+                "doc_id": doc_id,
+                "dry_run": True,
+                "old_pinned": old_pinned,
+                "new_pinned": bool(pinned),
+            }
+
+        writer = MetadataWriter(self.base_path)
+        _old, _new, backup = writer.update_metadata(doc_id, {"pinned": bool(pinned)})
+        return {
+            "doc_id": doc_id,
+            "dry_run": False,
+            "old_pinned": old_pinned,
+            "new_pinned": bool(pinned),
+            "backup_path": str(backup),
+        }
+
+    def restore_metadata(
+        self,
+        doc_id: str,
+        dry_run: bool = False,
+    ) -> dict:
+        """Restore a record's .metadata from its most recent timestamped backup.
+
+        Useful as an undo lever after rename, move, or pin. The current live
+        metadata is itself backed up first so the restore is reversible.
+        Returns the backup file consumed and the path of the pre-restore safety
+        copy. ``dry_run`` reports which backup *would* be consumed without
+        modifying anything.
+        """
+        meta_path = self.base_path / f"{doc_id}.metadata"
+        if not meta_path.exists():
+            return {"error": True, "detail": f"Metadata not found: {doc_id}"}
+
+        restorer = MetadataRestorer(self.base_path)
+        source = restorer.latest_backup(doc_id)
+        if source is None:
+            return {
+                "error": True,
+                "detail": f"No backups available for {doc_id}; nothing to restore",
+            }
+
+        if dry_run:
+            return {
+                "doc_id": doc_id,
+                "dry_run": True,
+                "would_restore_from": str(source),
+            }
+
+        try:
+            _old, _restored, pre_restore_backup, source_path = restorer.restore_latest(
+                doc_id
+            )
+        except FileNotFoundError as exc:
+            return {"error": True, "detail": str(exc)}
+        return {
+            "doc_id": doc_id,
+            "dry_run": False,
+            "restored_from": str(source_path),
+            "pre_restore_backup": str(pre_restore_backup),
+        }
+
+    def cleanup_metadata_backups(
+        self,
+        older_than_days: int | None = None,
+        doc_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Bulk-delete .metadata.bak.* files across the cache.
+
+        Refuses with an error when both filters are None - callers must opt in
+        explicitly via ``older_than_days`` (set to 0 to wipe everything) or by
+        targeting a specific ``doc_id``. ``dry_run`` reports the same numbers
+        without unlinking anything.
+
+        Returns files_removed, bytes_freed, scanned_docs, and backups_remaining
+        (matched but not removed - either too new under the age filter or
+        retained when ``dry_run=True``).
+        """
+        if older_than_days is None and doc_id is None:
+            return {
+                "error": True,
+                "detail": (
+                    "cleanup_metadata_backups requires at least one filter "
+                    "(older_than_days or doc_id). Pass older_than_days=0 to "
+                    "delete every backup unconditionally."
+                ),
+            }
+
+        if dry_run:
+            return self._cleanup_backups_dry_run(
+                older_than_days=older_than_days, doc_id=doc_id
+            )
+
+        files_removed, bytes_freed, scanned, backups_remaining = cleanup_backups(
+            self.base_path,
+            older_than_days=older_than_days,
+            doc_id=doc_id,
+        )
+        return {
+            "dry_run": False,
+            "files_removed": files_removed,
+            "bytes_freed": bytes_freed,
+            "scanned_docs": scanned,
+            "backups_remaining": backups_remaining,
+        }
+
+    def create_folder(
+        self,
+        name: str,
+        parent: str = "",
+        dry_run: bool = False,
+    ) -> dict:
+        """Create a new CollectionType folder record.
+
+        ``parent`` must be ``""`` (root) or an existing CollectionType id. The
+        ``"trash"`` sentinel is rejected explicitly. Sibling uniqueness is
+        enforced: a folder name (case-insensitive trim) cannot duplicate an
+        existing sibling under the same parent. Returns ``folder_id`` and the
+        on-disk paths on success.
+        """
+        cleaned_name = (name or "").strip()
+        if not cleaned_name:
+            return {"error": True, "detail": "name must be a non-empty string"}
+        if parent == "trash":
+            return {
+                "error": True,
+                "detail": (
+                    "Refusing to create folders inside 'trash'; use the "
+                    "reMarkable app to manage the trash"
+                ),
+            }
+        if parent != "":
+            target = self.cache.load_metadata(parent)
+            if target is None:
+                return {"error": True, "detail": f"Parent folder not found: {parent}"}
+            if not isinstance(target, CollectionMetadata):
+                return {
+                    "error": True,
+                    "detail": (
+                        f"Parent {parent} is not a folder (CollectionType); "
+                        "new folders can only be created under existing folders"
+                    ),
+                }
+            if target.deleted:
+                return {
+                    "error": True,
+                    "detail": f"Parent {parent} is in the trash; cannot create children",
+                }
+
+        if self._sibling_name_taken(parent, cleaned_name):
+            return {
+                "error": True,
+                "detail": (
+                    f"A folder named '{cleaned_name}' already exists under "
+                    f"parent '{parent or 'root'}'"
+                ),
+            }
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "name": cleaned_name,
+                "parent": parent,
+            }
+
+        creator = MetadataCreator(self.base_path)
+        folder_id, _meta, meta_path, content_path = creator.create_collection(
+            cleaned_name, parent=parent
+        )
+        return {
+            "dry_run": False,
+            "folder_id": folder_id,
+            "name": cleaned_name,
+            "parent": parent,
+            "metadata_path": str(meta_path),
+            "content_path": str(content_path),
+        }
+
+    # ------------------------------------------------------------------
+    # Private write helpers (shared by document and folder write methods)
+    # ------------------------------------------------------------------
+
+    def _rename_record(
+        self,
+        record_id: str,
+        new_name: str,
+        expected_kind: str,
+        dry_run: bool,
+    ) -> dict:
+        """Rename a document or folder. ``expected_kind`` is "document" or "folder"."""
+        cleaned_name = (new_name or "").strip()
+        if not cleaned_name:
+            return {"error": True, "detail": "new_name must be a non-empty string"}
+
+        meta = self.cache.load_metadata(record_id)
+        if meta is None:
+            label = expected_kind.capitalize()
+            return {"error": True, "detail": f"{label} not found: {record_id}"}
+        kind_error = _expect_kind(meta, record_id, expected_kind, action="rename")
+        if kind_error is not None:
+            return kind_error
+        if meta.deleted:
+            return {
+                "error": True,
+                "detail": (
+                    f"{record_id} is in the trash (deleted=True); "
+                    "restore it from the reMarkable app before renaming"
+                ),
+            }
+
+        old_name = meta.visible_name or record_id
+        if expected_kind == "folder":
+            parent = meta.parent or ""
+            if cleaned_name.lower() != old_name.lower() and self._sibling_name_taken(
+                parent, cleaned_name, exclude_id=record_id
+            ):
+                return {
+                    "error": True,
+                    "detail": (
+                        f"A folder named '{cleaned_name}' already exists under "
+                        f"parent '{parent or 'root'}'"
+                    ),
+                }
+
+        id_key = f"{expected_kind}_id"
+        if dry_run:
+            return {
+                id_key: record_id,
+                "dry_run": True,
+                "old_name": old_name,
+                "new_name": cleaned_name,
+            }
+
+        writer = MetadataWriter(self.base_path)
+        _old, _new, backup = writer.update_metadata(
+            record_id, {"visibleName": cleaned_name}
+        )
+        return {
+            id_key: record_id,
+            "dry_run": False,
+            "old_name": old_name,
+            "new_name": cleaned_name,
+            "backup_path": str(backup),
+        }
+
+    def _move_record(
+        self,
+        record_id: str,
+        new_parent: str,
+        expected_kind: str,
+        dry_run: bool,
+    ) -> dict:
+        """Move a document or folder. ``expected_kind`` is "document" or "folder"."""
+        meta = self.cache.load_metadata(record_id)
+        if meta is None:
+            label = expected_kind.capitalize()
+            return {"error": True, "detail": f"{label} not found: {record_id}"}
+        kind_error = _expect_kind(meta, record_id, expected_kind, action="move")
+        if kind_error is not None:
+            return kind_error
+        if meta.deleted:
+            return {
+                "error": True,
+                "detail": (
+                    f"{record_id} is in the trash (deleted=True); "
+                    "restore it from the reMarkable app before moving"
+                ),
+            }
+        if new_parent == record_id:
+            return {
+                "error": True,
+                "detail": f"Cannot move a {expected_kind} into itself",
+            }
+        if new_parent == "trash":
+            return {
+                "error": True,
+                "detail": (
+                    "Refusing to move into 'trash' via this tool; "
+                    "use the reMarkable app to send records to the trash"
+                ),
+            }
 
         if new_parent != "":
             target = self.cache.load_metadata(new_parent)
@@ -289,28 +599,137 @@ class RemarkableClient:
                     "error": True,
                     "detail": (
                         f"Target {new_parent} is not a folder (CollectionType); "
-                        "documents cannot contain other documents"
+                        "records cannot be moved into a document"
+                    ),
+                }
+            if target.deleted:
+                return {
+                    "error": True,
+                    "detail": f"Target folder {new_parent} is in the trash",
+                }
+            if self.cache.is_descendant_of(new_parent, record_id):
+                return {
+                    "error": True,
+                    "detail": (
+                        f"Cannot move {record_id} into {new_parent}: target is "
+                        "inside the source's own subtree"
                     ),
                 }
 
         old_parent = meta.parent
+        id_key = f"{expected_kind}_id"
         if dry_run:
             return {
-                "doc_id": doc_id,
+                id_key: record_id,
                 "dry_run": True,
                 "old_parent": old_parent,
                 "new_parent": new_parent,
             }
 
         writer = MetadataWriter(self.base_path)
-        _old, _new, backup = writer.update_metadata(doc_id, {"parent": new_parent})
+        _old, _new, backup = writer.update_metadata(record_id, {"parent": new_parent})
         return {
-            "doc_id": doc_id,
+            id_key: record_id,
             "dry_run": False,
             "old_parent": old_parent,
             "new_parent": new_parent,
             "backup_path": str(backup),
         }
+
+    def _sibling_name_taken(
+        self,
+        parent: str,
+        name: str,
+        exclude_id: str | None = None,
+    ) -> bool:
+        """True if a sibling folder under ``parent`` already has this name (case-insensitive)."""
+        target = name.strip().lower()
+        for folder_id, folder_meta in self.cache.iter_folders():
+            if exclude_id is not None and folder_id == exclude_id:
+                continue
+            if (folder_meta.parent or "") != parent:
+                continue
+            existing = (folder_meta.visible_name or "").strip().lower()
+            if existing == target:
+                return True
+        return False
+
+    def _cleanup_backups_dry_run(
+        self,
+        older_than_days: int | None,
+        doc_id: str | None,
+    ) -> dict:
+        """Compute what cleanup_metadata_backups would do without unlinking anything."""
+        from datetime import UTC, datetime
+
+        cutoff_ts: float | None = None
+        if older_than_days is not None:
+            cutoff_ts = datetime.now(UTC).timestamp() - older_than_days * 86400
+
+        if doc_id is not None:
+            scan_paths = [self.base_path / f"{doc_id}.metadata"]
+        else:
+            scan_paths = sorted(self.base_path.glob("*.metadata"))
+
+        files_to_remove = 0
+        bytes_freed = 0
+        backups_remaining = 0
+        scanned = 0
+        for meta_path in scan_paths:
+            if not meta_path.parent.exists():
+                continue
+            scanned += 1
+            for backup in sorted(
+                meta_path.parent.glob(f"{meta_path.name}.bak.*")
+            ):
+                try:
+                    stat = backup.stat()
+                except OSError:
+                    backups_remaining += 1
+                    continue
+                if cutoff_ts is not None and stat.st_mtime >= cutoff_ts:
+                    backups_remaining += 1
+                    continue
+                files_to_remove += 1
+                bytes_freed += stat.st_size
+        return {
+            "dry_run": True,
+            "files_removed": files_to_remove,
+            "bytes_freed": bytes_freed,
+            "scanned_docs": scanned,
+            "backups_remaining": backups_remaining,
+        }
+
+
+def _expect_kind(
+    meta: DocumentMetadata | CollectionMetadata,
+    record_id: str,
+    expected_kind: str,
+    action: str,
+) -> dict | None:
+    """Verify ``meta`` matches the expected kind. Returns an error dict on mismatch.
+
+    ``expected_kind`` is "document" or "folder". The returned error dict steers
+    the caller to the correct dedicated tool so the type-vs-tool relationship
+    stays explicit at the MCP surface.
+    """
+    if expected_kind == "document" and isinstance(meta, CollectionMetadata):
+        return {
+            "error": True,
+            "detail": (
+                f"{record_id} is a folder (CollectionType); "
+                f"use remarkable_{action}_folder for folder operations"
+            ),
+        }
+    if expected_kind == "folder" and isinstance(meta, DocumentMetadata):
+        return {
+            "error": True,
+            "detail": (
+                f"{record_id} is a document (DocumentType); "
+                f"use remarkable_{action}_document for document operations"
+            ),
+        }
+    return None
 
 
 def _document_summary(
