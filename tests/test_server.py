@@ -4,6 +4,7 @@
 import pytest
 
 from remarkable_mcp_redux.config import WRITE_TOOLS_ENV_VAR
+from remarkable_mcp_redux.exceptions import BackupMissingError, NotFoundError
 from remarkable_mcp_redux.server import build_server, client, mcp
 
 EXPECTED_READ_TOOLS = [
@@ -50,7 +51,7 @@ class TestToolResponseShapes:
     @pytest.mark.integration
     def test_check_status_shape(self):
         """remarkable_check_status should return status dict."""
-        result = client.check_status()
+        result = client.status.check()
         assert "cache_path" in result
         assert "cache_exists" in result
         assert "document_count" in result
@@ -60,7 +61,7 @@ class TestToolResponseShapes:
     @pytest.mark.integration
     def test_list_documents_shape(self):
         """remarkable_list_documents should return documents list, count, and pagination metadata."""
-        result = client.list_documents()
+        result = client.documents.list()
         assert "documents" in result
         assert "count" in result
         assert "total_count" in result
@@ -71,23 +72,26 @@ class TestToolResponseShapes:
         assert isinstance(result["has_more"], bool)
 
     @pytest.mark.integration
-    def test_get_document_info_missing(self):
-        """remarkable_get_document_info with bad ID returns error dict."""
-        result = client.get_document_info("nonexistent-id")
-        assert result["error"] is True
-        assert "detail" in result
+    def test_get_document_info_missing_raises(self):
+        """remarkable_get_document_info with bad ID raises NotFoundError at the facade.
+
+        The MCP tool boundary turns this into a ToolError envelope on the wire
+        (covered by test_boundary_translates_remarkable_error in test_exceptions).
+        """
+        with pytest.raises(NotFoundError, match="not found"):
+            client.documents.get_info("nonexistent-id")
 
     @pytest.mark.integration
     def test_cleanup_renders_shape(self):
         """remarkable_cleanup_renders should return files_removed and bytes_freed."""
-        result = client.cleanup_renders()
+        result = client.render.cleanup_renders()
         assert "files_removed" in result
         assert "bytes_freed" in result
 
     @pytest.mark.integration
     def test_list_folders_shape(self):
         """remarkable_list_folders should return folders list, count, and pagination metadata."""
-        result = client.list_folders()
+        result = client.folders.list()
         assert "folders" in result
         assert "count" in result
         assert "total_count" in result
@@ -137,7 +141,7 @@ class TestWriteToolResponseShapes:
         from remarkable_mcp_redux.client import RemarkableClient
 
         c = RemarkableClient(base_path=fake_cache)
-        result = c.pin_document("aaaa-1111-2222-3333", True, dry_run=True)
+        result = c.writes.pin_document("aaaa-1111-2222-3333", True, dry_run=True)
         assert "doc_id" in result
         assert "old_pinned" in result
         assert "new_pinned" in result
@@ -148,7 +152,7 @@ class TestWriteToolResponseShapes:
         from remarkable_mcp_redux.client import RemarkableClient
 
         c = RemarkableClient(base_path=fake_cache)
-        result = c.create_folder("Shape Check", dry_run=True)
+        result = c.writes.create_folder("Shape Check", dry_run=True)
         assert result["dry_run"] is True
         assert result["name"] == "Shape Check"
         assert result["parent"] == ""
@@ -158,17 +162,16 @@ class TestWriteToolResponseShapes:
         from remarkable_mcp_redux.client import RemarkableClient
 
         c = RemarkableClient(base_path=fake_cache)
-        result = c.cleanup_metadata_backups(older_than_days=0, dry_run=True)
+        result = c.writes.cleanup_metadata_backups(older_than_days=0, dry_run=True)
         assert "files_removed" in result
         assert "bytes_freed" in result
         assert "scanned_docs" in result
         assert "backups_remaining" in result
 
     @pytest.mark.integration
-    def test_restore_metadata_no_backup_returns_error(self, fake_cache):
+    def test_restore_metadata_no_backup_raises(self, fake_cache):
         from remarkable_mcp_redux.client import RemarkableClient
 
         c = RemarkableClient(base_path=fake_cache)
-        result = c.restore_metadata("aaaa-1111-2222-3333")
-        assert result["error"] is True
-        assert "backup" in result["detail"].lower()
+        with pytest.raises(BackupMissingError, match="(?i)backup"):
+            c.writes.restore_metadata("aaaa-1111-2222-3333")

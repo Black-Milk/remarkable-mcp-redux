@@ -11,8 +11,10 @@ from ..core.page_sources import (
     RmV5Source,
     RmV6Source,
 )
-from ..core.render import RemarkableRenderer
+from ..core.render import RemarkableRenderer, RenderResult
 from ..core.rm_format import parse_rm_version
+from ..exceptions import KindMismatchError, NotFoundError, ValidationError
+from ..responses import CleanupResponse, PageFailure, RenderResponse
 from ..schemas import CollectionMetadata, ContentMetadata
 
 
@@ -35,13 +37,10 @@ class RenderFacade:
         page_indices: list[int] | None = None,
         last_n: int | None = None,
         first_n: int | None = None,
-    ) -> dict:
+    ) -> RenderResponse:
         """Render selected pages of a document to a single PDF.
 
         Priority: page_indices > last_n > first_n > all pages.
-        Empty page_indices=[] is rejected with an error.
-        Refuses CollectionType records (folders) with an explicit error.
-
         Per-page source dispatch:
           - .rm file present and v6 -> rendered via rmc + cairosvg.
           - .rm file present and v5 -> reported as ``code: "v5_unsupported"``
@@ -52,28 +51,29 @@ class RenderFacade:
 
         On success the response carries ``sources_used`` with non-zero counts
         per source kind (e.g. ``{"rm_v6": 3, "pdf_passthrough": 5}``).
+
+        Raises ``ValidationError`` on empty ``page_indices`` or a document
+        with no pages, ``NotFoundError`` on an unknown ``doc_id``, and
+        ``KindMismatchError`` when ``doc_id`` resolves to a folder. The
+        mechanism layer (``core/render.py``) returns the transport-agnostic
+        ``RenderResult`` dataclass; this facade converts it to the wire-level
+        ``RenderResponse`` so tools/render.py never imports ``core``.
         """
         if page_indices is not None and len(page_indices) == 0:
-            return {
-                "error": True,
-                "detail": "page_indices must contain at least one index",
-            }
+            raise ValidationError("page_indices must contain at least one index")
 
         meta = self._cache.load_metadata(doc_id)
         if meta is None:
-            return {"error": True, "detail": f"Document not found: {doc_id}"}
+            raise NotFoundError(f"Document not found: {doc_id}")
         if isinstance(meta, CollectionMetadata):
-            return {
-                "error": True,
-                "detail": (
-                    f"{doc_id} is a folder (CollectionType), not a document; "
-                    "rendering folders is not supported."
-                ),
-            }
+            raise KindMismatchError(
+                f"{doc_id} is a folder (CollectionType), not a document; "
+                "rendering folders is not supported."
+            )
 
         all_page_ids = self._cache.get_page_ids(doc_id)
         if not all_page_ids:
-            return {"error": True, "detail": "No pages found in document"}
+            raise ValidationError("No pages found in document")
 
         doc_name = meta.visible_name or doc_id
         content = self._cache.load_content(doc_id)
@@ -92,16 +92,17 @@ class RenderFacade:
             selected_indices=selected_indices,
         )
 
-        return self._renderer.render_document_pages(
+        result = self._renderer.render_document_pages(
             doc_id=doc_id,
             document_name=doc_name,
             plan=plan,
             selected_indices=selected_indices,
         )
+        return _render_response_from_result(result)
 
-    def cleanup_renders(self) -> dict:
+    def cleanup_renders(self) -> CleanupResponse:
         """Remove all files from the render directory."""
-        return self._renderer.cleanup()
+        return CleanupResponse.model_validate(self._renderer.cleanup())
 
     def _build_page_plan(
         self,
@@ -168,3 +169,27 @@ def _resolve_page_selection(
     if first_n is not None:
         return list(range(min(first_n, total)))
     return list(range(total))
+
+
+def _render_response_from_result(result: RenderResult) -> RenderResponse:
+    """Convert the mechanism ``RenderResult`` into the wire ``RenderResponse``.
+
+    Builds the kwargs conditionally so ``sources_used`` stays unset (and
+    therefore omitted from the wire dict) when the renderer produced nothing
+    — matching the pre-Phase-3 behaviour that omitted the key entirely on
+    failure-only renders.
+    """
+    pages_failed = [
+        PageFailure(index=f.index, code=f.code, reason=f.reason)
+        for f in result.pages_failed
+    ]
+    kwargs: dict = {
+        "pdf_path": str(result.pdf_path) if result.pdf_path is not None else None,
+        "document_name": result.document_name,
+        "pages_rendered": result.pages_rendered,
+        "pages_failed": pages_failed,
+        "page_indices": result.page_indices,
+    }
+    if result.sources_used:
+        kwargs["sources_used"] = result.sources_used
+    return RenderResponse(**kwargs)

@@ -5,6 +5,7 @@ import io
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -65,6 +66,45 @@ class PdfExtractError(RenderError):
 
 
 # ------------------------------------------------------------------
+# Mechanism return types
+# ------------------------------------------------------------------
+
+
+@dataclass
+class PageRenderFailure:
+    """Per-page failure as returned by the renderer mechanism.
+
+    ``code`` matches the stable string carried by ``RenderError`` subclasses
+    (``v5_unsupported``, ``no_source``, ``rmc_failed``, ``cairosvg_failed``,
+    ``pdf_extract_failed``, ``out_of_bounds``, ``render_error``). Facades map
+    this dataclass onto the ``PageFailure`` Pydantic wire model.
+    """
+
+    index: int
+    code: str
+    reason: str
+
+
+@dataclass
+class RenderResult:
+    """Transport-agnostic mechanism return for a render-document-pages call.
+
+    Lives in ``core/`` because it is mechanism, not policy. ``facades/render.py``
+    converts a ``RenderResult`` into the Pydantic ``RenderResponse`` (and, in
+    Phase 5, a transport-aware variant carrying ``EmbeddedResource`` /
+    ``ResourceLink``) at the wire boundary. The renderer never imports
+    ``responses.py``, keeping the layered dependency direction one-way.
+    """
+
+    pdf_path: Path | None
+    document_name: str
+    pages_rendered: int
+    pages_failed: list[PageRenderFailure]
+    page_indices: list[int]
+    sources_used: dict[str, int] = field(default_factory=dict)
+
+
+# ------------------------------------------------------------------
 # Public dispatch surface
 # ------------------------------------------------------------------
 
@@ -105,27 +145,28 @@ class RemarkableRenderer:
         document_name: str,
         plan: list[PageSource | None],
         selected_indices: list[int],
-    ) -> dict:
+    ) -> RenderResult:
         """Render each ``PageSource`` in ``plan`` and merge into a single PDF.
 
         ``plan`` is parallel to ``selected_indices``: ``plan[i]`` is the source
         for ``selected_indices[i]``, or ``None`` for an out-of-bounds index.
+
+        Returns a ``RenderResult`` dataclass; the facade converts it to the
+        wire-level ``RenderResponse`` Pydantic model.
         """
         self.render_dir.mkdir(parents=True, exist_ok=True)
         writer = PdfWriter()
         pages_rendered = 0
-        pages_failed: list[dict] = []
+        pages_failed: list[PageRenderFailure] = []
         sources_used: dict[str, int] = {}
 
         for plan_pos, idx in enumerate(selected_indices):
             src = plan[plan_pos] if plan_pos < len(plan) else None
             if src is None:
                 pages_failed.append(
-                    {
-                        "index": idx,
-                        "code": "out_of_bounds",
-                        "reason": "out of bounds",
-                    }
+                    PageRenderFailure(
+                        index=idx, code="out_of_bounds", reason="out of bounds"
+                    )
                 )
                 continue
 
@@ -133,12 +174,12 @@ class RemarkableRenderer:
                 pdf_bytes = render_page_source(src)
             except RenderError as exc:
                 pages_failed.append(
-                    {"index": idx, "code": exc.code, "reason": str(exc)}
+                    PageRenderFailure(index=idx, code=exc.code, reason=str(exc))
                 )
                 continue
             except Exception as exc:
                 pages_failed.append(
-                    {"index": idx, "code": "render_error", "reason": str(exc)}
+                    PageRenderFailure(index=idx, code="render_error", reason=str(exc))
                 )
                 continue
 
@@ -148,7 +189,7 @@ class RemarkableRenderer:
                     writer.add_page(page)
             except Exception as exc:
                 pages_failed.append(
-                    {"index": idx, "code": "render_error", "reason": str(exc)}
+                    PageRenderFailure(index=idx, code="render_error", reason=str(exc))
                 )
                 continue
 
@@ -157,32 +198,34 @@ class RemarkableRenderer:
             sources_used[label] = sources_used.get(label, 0) + 1
 
         if pages_rendered == 0:
-            response: dict = {
-                "pdf_path": None,
-                "document_name": document_name,
-                "pages_rendered": 0,
-                "pages_failed": pages_failed,
-                "page_indices": selected_indices,
-            }
-            return response
+            return RenderResult(
+                pdf_path=None,
+                document_name=document_name,
+                pages_rendered=0,
+                pages_failed=pages_failed,
+                page_indices=selected_indices,
+                sources_used={},
+            )
 
         pdf_path = self.render_dir / f"{doc_id}.pdf"
         with open(pdf_path, "wb") as f:
             writer.write(f)
 
-        response = {
-            "pdf_path": str(pdf_path),
-            "document_name": document_name,
-            "pages_rendered": pages_rendered,
-            "pages_failed": pages_failed,
-            "page_indices": selected_indices,
-        }
-        if sources_used:
-            response["sources_used"] = sources_used
-        return response
+        return RenderResult(
+            pdf_path=pdf_path,
+            document_name=document_name,
+            pages_rendered=pages_rendered,
+            pages_failed=pages_failed,
+            page_indices=selected_indices,
+            sources_used=sources_used,
+        )
 
     def cleanup(self) -> dict:
-        """Remove all files from the render directory."""
+        """Remove all files from the render directory.
+
+        Returns a plain dict matching the ``CleanupResponse`` field set; the
+        facade wraps it into the Pydantic model at the boundary.
+        """
         if not self.render_dir.exists():
             return {"files_removed": 0, "bytes_freed": 0}
 

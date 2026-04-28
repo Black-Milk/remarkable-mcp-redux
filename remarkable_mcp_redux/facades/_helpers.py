@@ -1,10 +1,18 @@
 # ABOUTME: Shared helpers for the facades subpackage: pagination, parent/kind validation,
-# ABOUTME: sibling-name uniqueness, and the rename/move record operations.
+# ABOUTME: sibling-name uniqueness, and the rename/move record operations. Raises typed
+# ABOUTME: RemarkableError subclasses on validation failure (Phase 4).
 
 from pathlib import Path
 
 from ..core.cache import RemarkableCache
 from ..core.writes import MetadataWriter
+from ..exceptions import (
+    ConflictError,
+    KindMismatchError,
+    NotFoundError,
+    TrashedRecordError,
+    ValidationError,
+)
 from ..schemas import CollectionMetadata, DocumentMetadata
 
 
@@ -13,39 +21,31 @@ def expect_kind(
     record_id: str,
     expected_kind: str,
     action: str,
-) -> dict | None:
-    """Verify ``meta`` matches the expected kind. Returns an error dict on mismatch.
+) -> None:
+    """Verify ``meta`` matches the expected kind. Raises ``KindMismatchError`` on mismatch.
 
-    ``expected_kind`` is "document" or "folder". The returned error dict steers
+    ``expected_kind`` is "document" or "folder". The exception detail steers
     the caller to the correct dedicated tool so the type-vs-tool relationship
     stays explicit at the MCP surface.
     """
     if expected_kind == "document" and isinstance(meta, CollectionMetadata):
-        return {
-            "error": True,
-            "detail": (
-                f"{record_id} is a folder (CollectionType); "
-                f"use remarkable_{action}_folder for folder operations"
-            ),
-        }
+        raise KindMismatchError(
+            f"{record_id} is a folder (CollectionType); "
+            f"use remarkable_{action}_folder for folder operations"
+        )
     if expected_kind == "folder" and isinstance(meta, DocumentMetadata):
-        return {
-            "error": True,
-            "detail": (
-                f"{record_id} is a document (DocumentType); "
-                f"use remarkable_{action}_document for document operations"
-            ),
-        }
-    return None
+        raise KindMismatchError(
+            f"{record_id} is a document (DocumentType); "
+            f"use remarkable_{action}_document for document operations"
+        )
 
 
-def validate_pagination(limit: int, offset: int) -> dict | None:
-    """Validate ``limit``/``offset`` arg pair. Returns an error dict or None."""
+def validate_pagination(limit: int, offset: int) -> None:
+    """Validate ``limit``/``offset`` arg pair. Raises ``ValidationError`` on bad input."""
     if not isinstance(limit, int) or limit < 1:
-        return {"error": True, "detail": "limit must be a positive integer"}
+        raise ValidationError("limit must be a positive integer")
     if not isinstance(offset, int) or offset < 0:
-        return {"error": True, "detail": "offset must be a non-negative integer"}
-    return None
+        raise ValidationError("offset must be a non-negative integer")
 
 
 def paginate_response(
@@ -77,26 +77,23 @@ def paginate_response(
 
 def validate_parent_for_listing(
     cache: RemarkableCache, parent: str | None
-) -> dict | None:
+) -> None:
     """Verify ``parent`` is None, "" (root), or an existing CollectionType id.
 
-    Returns an error dict on mismatch so list_documents/list_folders can
+    Raises ``NotFoundError`` for unknown ids and ``KindMismatchError`` when
+    ``parent`` resolves to a DocumentType, so list_documents/list_folders
     surface a clear failure instead of silently returning empty pages.
     """
     if parent is None or parent == "":
-        return None
+        return
     target = cache.load_metadata(parent)
     if target is None:
-        return {"error": True, "detail": f"Parent folder not found: {parent}"}
+        raise NotFoundError(f"Parent folder not found: {parent}")
     if not isinstance(target, CollectionMetadata):
-        return {
-            "error": True,
-            "detail": (
-                f"Parent {parent} is not a folder (CollectionType); "
-                "use an existing folder id or omit parent"
-            ),
-        }
-    return None
+        raise KindMismatchError(
+            f"Parent {parent} is not a folder (CollectionType); "
+            "use an existing folder id or omit parent"
+        )
 
 
 def sibling_name_taken(
@@ -126,26 +123,29 @@ def rename_record(
     expected_kind: str,
     dry_run: bool,
 ) -> dict:
-    """Rename a document or folder. ``expected_kind`` is "document" or "folder"."""
+    """Rename a document or folder. ``expected_kind`` is "document" or "folder".
+
+    Raises:
+      - ``ValidationError``: empty ``new_name``.
+      - ``NotFoundError``: ``record_id`` not present in the cache.
+      - ``KindMismatchError``: ``record_id`` is the wrong kind.
+      - ``TrashedRecordError``: target is in the trash.
+      - ``ConflictError``: folder rename collides with an existing sibling.
+    """
     cleaned_name = (new_name or "").strip()
     if not cleaned_name:
-        return {"error": True, "detail": "new_name must be a non-empty string"}
+        raise ValidationError("new_name must be a non-empty string")
 
     meta = cache.load_metadata(record_id)
     if meta is None:
         label = expected_kind.capitalize()
-        return {"error": True, "detail": f"{label} not found: {record_id}"}
-    kind_error = expect_kind(meta, record_id, expected_kind, action="rename")
-    if kind_error is not None:
-        return kind_error
+        raise NotFoundError(f"{label} not found: {record_id}")
+    expect_kind(meta, record_id, expected_kind, action="rename")
     if meta.deleted:
-        return {
-            "error": True,
-            "detail": (
-                f"{record_id} is in the trash (deleted=True); "
-                "restore it from the reMarkable app before renaming"
-            ),
-        }
+        raise TrashedRecordError(
+            f"{record_id} is in the trash (deleted=True); "
+            "restore it from the reMarkable app before renaming"
+        )
 
     old_name = meta.visible_name or record_id
     if expected_kind == "folder":
@@ -153,13 +153,10 @@ def rename_record(
         if cleaned_name.lower() != old_name.lower() and sibling_name_taken(
             cache, parent, cleaned_name, exclude_id=record_id
         ):
-            return {
-                "error": True,
-                "detail": (
-                    f"A folder named '{cleaned_name}' already exists under "
-                    f"parent '{parent or 'root'}'"
-                ),
-            }
+            raise ConflictError(
+                f"A folder named '{cleaned_name}' already exists under "
+                f"parent '{parent or 'root'}'"
+            )
 
     id_key = f"{expected_kind}_id"
     if dry_run:
@@ -191,64 +188,51 @@ def move_record(
     expected_kind: str,
     dry_run: bool,
 ) -> dict:
-    """Move a document or folder. ``expected_kind`` is "document" or "folder"."""
+    """Move a document or folder. ``expected_kind`` is "document" or "folder".
+
+    Raises:
+      - ``NotFoundError``: source or target folder is missing.
+      - ``KindMismatchError``: source is the wrong kind, or target is a document.
+      - ``TrashedRecordError``: source or target is in the trash.
+      - ``ValidationError``: ``new_parent`` is the source itself, the trash
+        sentinel, or a descendant of the source (cycle).
+    """
     meta = cache.load_metadata(record_id)
     if meta is None:
         label = expected_kind.capitalize()
-        return {"error": True, "detail": f"{label} not found: {record_id}"}
-    kind_error = expect_kind(meta, record_id, expected_kind, action="move")
-    if kind_error is not None:
-        return kind_error
+        raise NotFoundError(f"{label} not found: {record_id}")
+    expect_kind(meta, record_id, expected_kind, action="move")
     if meta.deleted:
-        return {
-            "error": True,
-            "detail": (
-                f"{record_id} is in the trash (deleted=True); "
-                "restore it from the reMarkable app before moving"
-            ),
-        }
+        raise TrashedRecordError(
+            f"{record_id} is in the trash (deleted=True); "
+            "restore it from the reMarkable app before moving"
+        )
     if new_parent == record_id:
-        return {
-            "error": True,
-            "detail": f"Cannot move a {expected_kind} into itself",
-        }
+        raise ValidationError(f"Cannot move a {expected_kind} into itself")
     if new_parent == "trash":
-        return {
-            "error": True,
-            "detail": (
-                "Refusing to move into 'trash' via this tool; "
-                "use the reMarkable app to send records to the trash"
-            ),
-        }
+        raise ValidationError(
+            "Refusing to move into 'trash' via this tool; "
+            "use the reMarkable app to send records to the trash"
+        )
 
     if new_parent != "":
         target = cache.load_metadata(new_parent)
         if target is None:
-            return {
-                "error": True,
-                "detail": f"Target folder not found: {new_parent}",
-            }
+            raise NotFoundError(f"Target folder not found: {new_parent}")
         if not isinstance(target, CollectionMetadata):
-            return {
-                "error": True,
-                "detail": (
-                    f"Target {new_parent} is not a folder (CollectionType); "
-                    "records cannot be moved into a document"
-                ),
-            }
+            raise KindMismatchError(
+                f"Target {new_parent} is not a folder (CollectionType); "
+                "records cannot be moved into a document"
+            )
         if target.deleted:
-            return {
-                "error": True,
-                "detail": f"Target folder {new_parent} is in the trash",
-            }
+            raise TrashedRecordError(
+                f"Target folder {new_parent} is in the trash"
+            )
         if cache.is_descendant_of(new_parent, record_id):
-            return {
-                "error": True,
-                "detail": (
-                    f"Cannot move {record_id} into {new_parent}: target is "
-                    "inside the source's own subtree"
-                ),
-            }
+            raise ValidationError(
+                f"Cannot move {record_id} into {new_parent}: target is "
+                "inside the source's own subtree"
+            )
 
     old_parent = meta.parent
     id_key = f"{expected_kind}_id"

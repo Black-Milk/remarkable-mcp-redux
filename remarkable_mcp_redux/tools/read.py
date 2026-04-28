@@ -3,7 +3,15 @@
 
 from fastmcp import FastMCP
 
+from ..annotations import ANNOTATIONS, TITLES
 from ..facades import DocumentsFacade, FoldersFacade, StatusFacade
+from ..responses import (
+    DocumentInfoResponse,
+    DocumentListResponse,
+    FolderListResponse,
+    StatusResponse,
+)
+from ._boundary import tool_error_boundary
 
 
 def register_read_tools(
@@ -15,7 +23,12 @@ def register_read_tools(
 ) -> None:
     """Register read-only document/folder/status tools on the FastMCP app."""
 
-    @mcp.tool()
+    @mcp.tool(
+        title=TITLES["remarkable_list_documents"],
+        annotations=ANNOTATIONS["remarkable_list_documents"],
+        output_schema=DocumentListResponse.model_json_schema(),
+    )
+    @tool_error_boundary
     def remarkable_list_documents(
         search: str | None = None,
         file_type: str | None = None,
@@ -24,7 +37,7 @@ def register_read_tools(
         parent: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> dict:
+    ):
         """List documents in the reMarkable local cache (folders are excluded).
         Optional filters:
           - search: case-insensitive substring match on document name.
@@ -53,14 +66,19 @@ def register_read_tools(
             offset=offset,
         )
 
-    @mcp.tool()
+    @mcp.tool(
+        title=TITLES["remarkable_list_folders"],
+        annotations=ANNOTATIONS["remarkable_list_folders"],
+        output_schema=FolderListResponse.model_json_schema(),
+    )
+    @tool_error_boundary
     def remarkable_list_folders(
         search: str | None = None,
         pinned: bool | None = None,
         parent: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> dict:
+    ):
         """List folders (CollectionType records) in the reMarkable local cache.
         Optional filters:
           - search: case-insensitive substring match on folder names.
@@ -85,10 +103,13 @@ def register_read_tools(
             offset=offset,
         )
 
-    @mcp.tool()
-    def remarkable_get_document_info(
-        doc_id: str, include_page_ids: bool = True
-    ) -> dict:
+    @mcp.tool(
+        title=TITLES["remarkable_get_document_info"],
+        annotations=ANNOTATIONS["remarkable_get_document_info"],
+        output_schema=DocumentInfoResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_get_document_info(doc_id: str, include_page_ids: bool = True):
         """Get detailed metadata for a single reMarkable document (folders are rejected).
         Returns doc_id, name, type, parent, last_modified (ISO-8601), pinned,
         last_opened_page, page_count, content_format (v1/v2), file_type,
@@ -101,8 +122,13 @@ def register_read_tools(
         Lightweight - reads JSON only, no rendering."""
         return documents.get_info(doc_id, include_page_ids=include_page_ids)
 
-    @mcp.tool()
-    def remarkable_check_status() -> dict:
+    @mcp.tool(
+        title=TITLES["remarkable_check_status"],
+        annotations=ANNOTATIONS["remarkable_check_status"],
+        output_schema=StatusResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_check_status():
         """Check reMarkable system status and tool availability.
         Returns whether the cache exists, document count, and rmc/cairo availability.
         Use this to diagnose issues before rendering."""

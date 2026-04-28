@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..core.cache import RemarkableCache
 from ..core.render import check_cairo_available, check_rmc_available
+from ..responses import StatusResponse
 
 
 class StatusFacade:
@@ -14,7 +15,7 @@ class StatusFacade:
         self._base_path = base_path
         self._cache = cache
 
-    def check(self) -> dict:
+    def check(self) -> StatusResponse:
         """Report cache existence, document count, and render-toolchain availability.
 
         ``document_count`` counts only DocumentType records (folders excluded).
@@ -23,10 +24,10 @@ class StatusFacade:
         the current environment.
         """
         cache_exists = self._cache.exists()
-        return {
-            "cache_path": str(self._base_path),
-            "cache_exists": cache_exists,
-            "document_count": self._cache.count_documents() if cache_exists else 0,
-            "rmc_available": check_rmc_available(),
-            "cairo_available": check_cairo_available(),
-        }
+        return StatusResponse(
+            cache_path=str(self._base_path),
+            cache_exists=cache_exists,
+            document_count=self._cache.count_documents() if cache_exists else 0,
+            rmc_available=check_rmc_available(),
+            cairo_available=check_cairo_available(),
+        )
