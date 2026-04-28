@@ -9,7 +9,7 @@ from remarkable_mcp_redux.annotations import ANNOTATIONS, TITLES
 from remarkable_mcp_redux.config import WRITE_TOOLS_ENV_VAR
 from remarkable_mcp_redux.server import build_server
 
-EXPECTED_TOOL_COUNT = 15
+EXPECTED_TOOL_COUNT = 17
 
 
 @pytest.fixture(scope="module")

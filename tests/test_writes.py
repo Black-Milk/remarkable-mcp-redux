@@ -43,6 +43,7 @@ class TestRenameDocument:
         )
         assert result.get("error") is not True
         assert result["dry_run"] is False
+        assert result["record_id"] == "aaaa-1111-2222-3333"
         assert result["old_name"] == "Morning Journal"
         assert result["new_name"] == "Renamed Journal"
 
@@ -129,6 +130,7 @@ class TestMoveDocument:
         client = RemarkableClient(base_path=fake_cache)
         result = client.writes.move_document("aaaa-1111-2222-3333", WORK_FOLDER_ID)
         assert result.get("error") is not True
+        assert result["record_id"] == "aaaa-1111-2222-3333"
         assert result["old_parent"] == ""
         assert result["new_parent"] == WORK_FOLDER_ID
         on_disk = json.loads(
@@ -651,6 +653,7 @@ class TestFolderRename:
         client = RemarkableClient(base_path=fake_cache)
         result = client.writes.rename_folder(WORK_FOLDER_ID, "Workspace")
         assert result.get("error") is not True
+        assert result["record_id"] == WORK_FOLDER_ID
         on_disk = json.loads(
             (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
         )
@@ -692,12 +695,291 @@ class TestFolderRename:
 # ---------------------------------------------------------------------------
 
 
+class TestRenameDocumentsBatch:
+    @pytest.mark.unit
+    def test_happy_path(self, fake_cache):
+        """Three docs, all renamed; results aligned with input order."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "new_name": "Renamed Journal"},
+            {"id": "bbbb-4444-5555-6666", "new_name": "Renamed Sketch"},
+            {"id": "cccc-7777-8888-9999", "new_name": "Renamed Empty"},
+        ]
+        result = client.writes.rename_documents_batch(items)
+        assert result["dry_run"] is False
+        assert result["succeeded"] == 3
+        assert result["failed"] == 0
+        rows = result["results"]
+        assert [r.id for r in rows] == [
+            "aaaa-1111-2222-3333",
+            "bbbb-4444-5555-6666",
+            "cccc-7777-8888-9999",
+        ]
+        for row in rows:
+            assert row.success is True
+            assert row.backup_path is not None
+            assert Path(row.backup_path).exists()
+        for doc_id, expected in [
+            ("aaaa-1111-2222-3333", "Renamed Journal"),
+            ("bbbb-4444-5555-6666", "Renamed Sketch"),
+            ("cccc-7777-8888-9999", "Renamed Empty"),
+        ]:
+            on_disk = json.loads((fake_cache / f"{doc_id}.metadata").read_text())
+            assert on_disk["visibleName"] == expected
+
+    @pytest.mark.unit
+    def test_dry_run_does_not_write(self, fake_cache):
+        """Dry-run reports succeeded counts but leaves the cache untouched."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "new_name": "Plan-only A"},
+            {"id": "bbbb-4444-5555-6666", "new_name": "Plan-only B"},
+        ]
+        result = client.writes.rename_documents_batch(items, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["succeeded"] == 2
+        assert result["failed"] == 0
+        for row in result["results"]:
+            assert row.success is True
+            assert row.backup_path is None
+        for doc_id, original in [
+            ("aaaa-1111-2222-3333", "Morning Journal"),
+            ("bbbb-4444-5555-6666", "Architecture Sketch"),
+        ]:
+            on_disk = json.loads((fake_cache / f"{doc_id}.metadata").read_text())
+            assert on_disk["visibleName"] == original
+        backups = list(fake_cache.glob("*.metadata.bak.*"))
+        assert backups == []
+
+    @pytest.mark.unit
+    def test_mixed_outcomes_continue_on_error(self, fake_cache):
+        """One success, one not_found, one kind_mismatch (folder id) — verify
+        ordering, error codes, and that the success still writes."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "new_name": "Renamed OK"},
+            {"id": "does-not-exist", "new_name": "Doomed"},
+            {"id": WORK_FOLDER_ID, "new_name": "Folder Rename"},
+        ]
+        result = client.writes.rename_documents_batch(items)
+        assert result["succeeded"] == 1
+        assert result["failed"] == 2
+        rows = result["results"]
+        assert rows[0].success is True
+        assert rows[0].old_name == "Morning Journal"
+        assert rows[1].success is False
+        assert rows[1].code == "not_found"
+        assert rows[2].success is False
+        assert rows[2].code == "kind_mismatch"
+
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Renamed OK"
+        folder_on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert folder_on_disk["visibleName"] == "Work"
+
+    @pytest.mark.unit
+    def test_trashed_record_yields_trashed_code(self, fake_cache):
+        """Trashed record reports code=trashed; sibling items still process."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": TRASHED_DOC_ID, "new_name": "Resurrect Me"},
+            {"id": "aaaa-1111-2222-3333", "new_name": "Renamed Anyway"},
+        ]
+        result = client.writes.rename_documents_batch(items)
+        assert result["succeeded"] == 1
+        assert result["failed"] == 1
+        assert result["results"][0].success is False
+        assert result["results"][0].code == "trashed"
+        assert result["results"][1].success is True
+
+        trashed_on_disk = json.loads(
+            (fake_cache / f"{TRASHED_DOC_ID}.metadata").read_text()
+        )
+        assert trashed_on_disk["visibleName"] == "Trashed Note"
+
+    @pytest.mark.unit
+    def test_empty_list_raises_validation(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)non-empty"):
+            client.writes.rename_documents_batch([])
+
+    @pytest.mark.unit
+    def test_duplicate_ids_raises_validation(self, fake_cache):
+        """Duplicate ids in one batch are refused before any write happens."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "new_name": "First"},
+            {"id": "aaaa-1111-2222-3333", "new_name": "Second"},
+        ]
+        with pytest.raises(ValidationError, match="(?i)duplicate"):
+            client.writes.rename_documents_batch(items)
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Morning Journal"
+
+    @pytest.mark.unit
+    def test_per_item_empty_name_does_not_abort_batch(self, fake_cache):
+        """An empty new_name on one item surfaces as code=validation; siblings still process."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "new_name": "   "},
+            {"id": "bbbb-4444-5555-6666", "new_name": "Survives"},
+        ]
+        result = client.writes.rename_documents_batch(items)
+        assert result["results"][0].success is False
+        assert result["results"][0].code == "validation"
+        assert result["results"][1].success is True
+
+
+class TestRenameFoldersBatch:
+    @pytest.mark.unit
+    def test_happy_path(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": WORK_FOLDER_ID, "new_name": "Workspace"},
+            {"id": PERSONAL_FOLDER_ID, "new_name": "Private"},
+        ]
+        result = client.writes.rename_folders_batch(items)
+        assert result["succeeded"] == 2
+        assert result["failed"] == 0
+        for folder_id, expected in [
+            (WORK_FOLDER_ID, "Workspace"),
+            (PERSONAL_FOLDER_ID, "Private"),
+        ]:
+            on_disk = json.loads((fake_cache / f"{folder_id}.metadata").read_text())
+            assert on_disk["visibleName"] == expected
+
+    @pytest.mark.unit
+    def test_in_batch_sibling_collision(self, fake_cache):
+        """[Work->Foo, Personal->Foo] under root: first wins, second reports conflict."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": WORK_FOLDER_ID, "new_name": "Foo"},
+            {"id": PERSONAL_FOLDER_ID, "new_name": "Foo"},
+        ]
+        result = client.writes.rename_folders_batch(items)
+        assert result["succeeded"] == 1
+        assert result["failed"] == 1
+        assert result["results"][0].success is True
+        assert result["results"][1].success is False
+        assert result["results"][1].code == "conflict"
+
+        work_on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert work_on_disk["visibleName"] == "Foo"
+        personal_on_disk = json.loads(
+            (fake_cache / f"{PERSONAL_FOLDER_ID}.metadata").read_text()
+        )
+        assert personal_on_disk["visibleName"] == "Personal"
+
+    @pytest.mark.unit
+    def test_existing_sibling_collision(self, fake_cache):
+        """Renaming Work to "Personal" collides with the existing sibling Personal
+        even though Personal isn't in the batch."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [{"id": WORK_FOLDER_ID, "new_name": "Personal"}]
+        result = client.writes.rename_folders_batch(items)
+        assert result["failed"] == 1
+        assert result["results"][0].success is False
+        assert result["results"][0].code == "conflict"
+        on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Work"
+
+    @pytest.mark.unit
+    def test_dry_run_simulates_in_batch_collision(self, fake_cache):
+        """Dry-run still walks the bucket so [A->Foo, B->Foo] flags the second
+        item without writing anything."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": WORK_FOLDER_ID, "new_name": "Shared"},
+            {"id": PERSONAL_FOLDER_ID, "new_name": "Shared"},
+        ]
+        result = client.writes.rename_folders_batch(items, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["succeeded"] == 1
+        assert result["failed"] == 1
+        assert result["results"][1].code == "conflict"
+
+        for folder_id, original in [
+            (WORK_FOLDER_ID, "Work"),
+            (PERSONAL_FOLDER_ID, "Personal"),
+        ]:
+            on_disk = json.loads((fake_cache / f"{folder_id}.metadata").read_text())
+            assert on_disk["visibleName"] == original
+        backups = list(fake_cache.glob("*.metadata.bak.*"))
+        assert backups == []
+
+    @pytest.mark.unit
+    def test_self_rename_allowed_in_batch(self, fake_cache):
+        """Renaming a folder to its current name (case-only change) must not
+        trip the in-batch sibling check."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [{"id": WORK_FOLDER_ID, "new_name": "WORK"}]
+        result = client.writes.rename_folders_batch(items)
+        assert result["succeeded"] == 1
+        assert result["results"][0].success is True
+
+
+class TestRenameRecordSingularUnchanged:
+    """Regression: extracting _validate_rename_target must not change the
+    behavior of the singular rename_document/rename_folder path."""
+
+    @pytest.mark.unit
+    def test_singular_document_rename_still_works(self, fake_cache):
+        """Document rename echoes the affected id under ``record_id``, writes
+        visibleName atomically, and produces a backup."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.rename_document(
+            "aaaa-1111-2222-3333", "Singular Rename"
+        )
+        assert result["dry_run"] is False
+        assert result["record_id"] == "aaaa-1111-2222-3333"
+        assert "record_id" in result
+        assert result["old_name"] == "Morning Journal"
+        assert result["new_name"] == "Singular Rename"
+        assert Path(result["backup_path"]).exists()
+        on_disk = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Singular Rename"
+
+    @pytest.mark.unit
+    def test_singular_folder_rename_still_works(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.rename_folder(WORK_FOLDER_ID, "Workspace")
+        assert result["dry_run"] is False
+        assert result["record_id"] == WORK_FOLDER_ID
+        assert "record_id" in result
+        assert result["old_name"] == "Work"
+        assert result["new_name"] == "Workspace"
+        on_disk = json.loads(
+            (fake_cache / f"{WORK_FOLDER_ID}.metadata").read_text()
+        )
+        assert on_disk["visibleName"] == "Workspace"
+
+    @pytest.mark.unit
+    def test_singular_validation_errors_unchanged(self, fake_cache):
+        """Empty name still raises ValidationError with the same message shape."""
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="non-empty"):
+            client.writes.rename_document("aaaa-1111-2222-3333", "   ")
+
+
 class TestFolderMove:
     @pytest.mark.unit
     def test_moves_folder(self, nested_folder_cache):
         client = RemarkableClient(base_path=nested_folder_cache)
         result = client.writes.move_folder(NESTED_FOLDER_D, NESTED_FOLDER_A)
         assert result.get("error") is not True
+        assert result["record_id"] == NESTED_FOLDER_D
         on_disk = json.loads(
             (nested_folder_cache / f"{NESTED_FOLDER_D}.metadata").read_text()
         )

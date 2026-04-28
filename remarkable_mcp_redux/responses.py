@@ -222,13 +222,14 @@ class CleanupResponse(_BaseResponse):
 class RenameResponse(_BaseResponse):
     """remarkable_rename_document / remarkable_rename_folder result.
 
-    Carries either ``doc_id`` (for documents) or ``folder_id`` (for folders),
-    never both. The unused field is omitted from the wire shape because it was
-    never set (default ``model_dump`` runs with ``exclude_unset=True``).
+    Carries the affected record's id as ``record_id``. The kind (document vs
+    folder) is already encoded in the tool name, so the response does not
+    repeat it in the field name. This mirrors ``BatchRenameItem.id`` on the
+    batch tools and removes a class of "field name dispatched by a string
+    formatter" bugs.
     """
 
-    doc_id: str | None = None
-    folder_id: str | None = None
+    record_id: str
     dry_run: bool
     old_name: str
     new_name: str
@@ -238,11 +239,12 @@ class RenameResponse(_BaseResponse):
 class MoveResponse(_BaseResponse):
     """remarkable_move_document / remarkable_move_folder result.
 
-    ``descendants_affected`` is only populated for folder moves.
+    Carries the affected record's id as ``record_id`` (kind is implicit in
+    the tool name). ``descendants_affected`` is only populated for folder
+    moves.
     """
 
-    doc_id: str | None = None
-    folder_id: str | None = None
+    record_id: str
     dry_run: bool
     old_parent: str | None = None
     new_parent: str
@@ -300,6 +302,42 @@ class CleanupBackupsResponse(_BaseResponse):
     backups_remaining: int
 
 
+class BatchRenameItem(_BaseResponse):
+    """One row in BatchRenameResponse.results.
+
+    Carries the input ``id`` and ``new_name`` echoed back verbatim so callers
+    can map results to inputs by index. ``success=True`` rows populate
+    ``old_name`` (and ``backup_path`` outside of dry-run) and leave
+    ``error``/``code`` unset. ``success=False`` rows populate ``error`` (the
+    exception detail) and ``code`` (the stable RemarkableError code) and
+    leave ``old_name``/``backup_path`` unset. Sparse-by-default
+    ``model_dump`` drops the unused half from the wire.
+    """
+
+    id: str
+    new_name: str
+    success: bool
+    old_name: str | None = None
+    backup_path: str | None = None
+    error: str | None = None
+    code: str | None = None
+
+
+class BatchRenameResponse(_BaseResponse):
+    """remarkable_rename_documents_batch / remarkable_rename_folders_batch result.
+
+    ``results`` is index-aligned with the input ``items`` list; per-item
+    failures are embedded inline rather than aborting the batch (continue-on-
+    error). ``succeeded``/``failed`` are aggregate counts derived from
+    ``results`` for quick triage without re-iterating.
+    """
+
+    dry_run: bool
+    results: list[BatchRenameItem]
+    succeeded: int
+    failed: int
+
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -326,6 +364,8 @@ class ToolError(_BaseResponse):
 
 
 __all__ = [
+    "BatchRenameItem",
+    "BatchRenameResponse",
     "CleanupBackupsResponse",
     "CleanupResponse",
     "CreateFolderResponse",

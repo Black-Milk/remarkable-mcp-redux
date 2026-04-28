@@ -21,6 +21,8 @@ TITLES: dict[str, str] = {
     # Write
     "remarkable_rename_document": "Rename reMarkable document",
     "remarkable_rename_folder": "Rename reMarkable folder",
+    "remarkable_rename_documents_batch": "Rename reMarkable documents in batch",
+    "remarkable_rename_folders_batch": "Rename reMarkable folders in batch",
     "remarkable_move_document": "Move reMarkable document",
     "remarkable_move_folder": "Move reMarkable folder",
     "remarkable_create_folder": "Create reMarkable folder",
@@ -83,6 +85,21 @@ ANNOTATIONS: dict[str, ToolAnnotations] = {
         openWorldHint=False,
     ),
     "remarkable_rename_folder": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    # Batch rename tools — same destructive semantics as the singular versions;
+    # continue-on-error per item is reflected in the response shape, not the
+    # annotation hints (the tool itself still mutates state).
+    "remarkable_rename_documents_batch": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    "remarkable_rename_folders_batch": ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
         idempotentHint=False,

@@ -8,6 +8,7 @@ from fastmcp import FastMCP
 from ..annotations import ANNOTATIONS, TITLES
 from ..facades import WritesFacade
 from ..responses import (
+    BatchRenameResponse,
     CleanupBackupsResponse,
     CreateFolderResponse,
     MoveResponse,
@@ -64,6 +65,50 @@ def register_write_tools(mcp: FastMCP, *, writes: WritesFacade) -> None:
         with a timestamped backup. Pause reMarkable desktop sync before invoking
         this tool."""
         return writes.rename_folder(folder_id, new_name, dry_run=dry_run)
+
+    @mcp.tool(
+        title=TITLES["remarkable_rename_documents_batch"],
+        annotations=ANNOTATIONS["remarkable_rename_documents_batch"],
+        output_schema=BatchRenameResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_rename_documents_batch(
+        items: list[dict],
+        dry_run: bool = False,
+    ):
+        """Rename many reMarkable documents in one call (continue-on-error).
+        ``items`` is a list of {"id": doc_id, "new_name": str}. The response
+        carries one BatchRenameItem per input position so callers can map
+        results by index; per-item failures (not_found, kind_mismatch on a
+        folder id, trashed, validation) are embedded inline and the loop
+        keeps going. Whole-request errors (empty list, duplicate ids,
+        malformed items) raise the standard ToolError envelope and write
+        nothing. With dry_run=true, validates every item and reports the
+        plan without touching disk. Pause reMarkable desktop sync before
+        invoking this tool."""
+        return writes.rename_documents_batch(items, dry_run=dry_run)
+
+    @mcp.tool(
+        title=TITLES["remarkable_rename_folders_batch"],
+        annotations=ANNOTATIONS["remarkable_rename_folders_batch"],
+        output_schema=BatchRenameResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_rename_folders_batch(
+        items: list[dict],
+        dry_run: bool = False,
+    ):
+        """Rename many reMarkable folders in one call (continue-on-error).
+        ``items`` is a list of {"id": folder_id, "new_name": str}. Sibling
+        uniqueness is enforced both against the existing cache and against
+        earlier successful renames in the same batch — so [{A:Foo},{B:Foo}]
+        under the same parent succeeds for the first item and reports
+        code=conflict on the second. Whole-request errors (empty list,
+        duplicate ids, malformed items) raise the standard ToolError
+        envelope and write nothing. With dry_run=true, simulates the bucket
+        and reports the plan without touching disk. Pause reMarkable
+        desktop sync before invoking this tool."""
+        return writes.rename_folders_batch(items, dry_run=dry_run)
 
     @mcp.tool(
         title=TITLES["remarkable_move_document"],

@@ -21,6 +21,7 @@ from ..exceptions import (
     ValidationError,
 )
 from ..responses import (
+    BatchRenameResponse,
     CleanupBackupsResponse,
     CreateFolderResponse,
     MoveResponse,
@@ -30,6 +31,7 @@ from ..responses import (
 )
 from ..schemas import CollectionMetadata
 from ._helpers import (
+    apply_rename_batch,
     move_record,
     rename_record,
     sibling_name_taken,
@@ -91,6 +93,57 @@ class WritesFacade:
             dry_run=dry_run,
         )
         return RenameResponse.model_validate(result)
+
+    def rename_documents_batch(
+        self,
+        items: list[dict],
+        dry_run: bool = False,
+    ) -> BatchRenameResponse:
+        """Rename N documents in a single MCP turn (continue-on-error).
+
+        ``items`` is a list of ``{"id": str, "new_name": str}`` dicts. Per-item
+        failures (missing record, wrong kind, trashed, empty name) are
+        embedded in the response as ``BatchRenameItem`` rows with
+        ``success=False`` rather than aborting the batch — the loop keeps
+        going so callers see every outcome in one response.
+
+        Whole-request errors (empty list, non-dict items, missing keys,
+        duplicate ids within the batch) raise ``ValidationError`` at the
+        boundary; nothing is written in that case.
+        """
+        _validate_batch_items(items)
+        rows = apply_rename_batch(
+            self._cache,
+            self._base_path,
+            items,
+            expected_kind="document",
+            dry_run=dry_run,
+        )
+        return _build_batch_response(rows, dry_run=dry_run)
+
+    def rename_folders_batch(
+        self,
+        items: list[dict],
+        dry_run: bool = False,
+    ) -> BatchRenameResponse:
+        """Rename N folders in a single MCP turn (continue-on-error).
+
+        Same shape as ``rename_documents_batch`` plus an in-memory sibling-
+        uniqueness bucket: ``[A->Foo, B->Foo]`` under the same parent
+        succeeds for the first item and reports ``code=conflict`` on the
+        second, even though the cache itself isn't reloaded mid-loop.
+
+        Whole-request validation is identical to the document path.
+        """
+        _validate_batch_items(items)
+        rows = apply_rename_batch(
+            self._cache,
+            self._base_path,
+            items,
+            expected_kind="folder",
+            dry_run=dry_run,
+        )
+        return _build_batch_response(rows, dry_run=dry_run)
 
     def move_document(
         self,
@@ -347,6 +400,53 @@ class WritesFacade:
             metadata_path=str(meta_path),
             content_path=str(content_path),
         )
+
+
+def _validate_batch_items(items: object) -> None:
+    """Whole-request validation for the rename batch tools.
+
+    Enforces non-empty list of ``{id: str, new_name: str}`` dicts with unique
+    ids. Per-item content errors (missing record, wrong kind, trashed,
+    whitespace-only name) are NOT checked here — those flow through
+    ``apply_rename_batch`` as continue-on-error rows. The split keeps
+    "the request itself is malformed" distinct from "this one item failed".
+    """
+    if not isinstance(items, list):
+        raise ValidationError("items must be a non-empty list of {id, new_name} dicts")
+    if not items:
+        raise ValidationError("items must be a non-empty list of {id, new_name} dicts")
+    seen_ids: set[str] = set()
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValidationError(
+                f"items[{index}] must be a dict with 'id' and 'new_name' keys"
+            )
+        if "id" not in item or "new_name" not in item:
+            raise ValidationError(
+                f"items[{index}] must include both 'id' and 'new_name'"
+            )
+        item_id = item["id"]
+        if not isinstance(item_id, str) or not item_id:
+            raise ValidationError(f"items[{index}].id must be a non-empty string")
+        if item_id in seen_ids:
+            raise ValidationError(
+                f"duplicate id in batch: {item_id} (each id may appear at most once)"
+            )
+        seen_ids.add(item_id)
+
+
+def _build_batch_response(rows: list[dict], dry_run: bool) -> BatchRenameResponse:
+    """Wrap per-item rows into ``BatchRenameResponse`` with aggregate counts."""
+    succeeded = sum(1 for row in rows if row.get("success"))
+    failed = len(rows) - succeeded
+    return BatchRenameResponse.model_validate(
+        {
+            "dry_run": dry_run,
+            "results": rows,
+            "succeeded": succeeded,
+            "failed": failed,
+        }
+    )
 
 
 def _cleanup_backups_dry_run(

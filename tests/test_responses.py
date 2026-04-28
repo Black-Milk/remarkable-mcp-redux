@@ -76,7 +76,7 @@ class TestDictCompatibility:
     def test_unset_field_is_absent(self):
         """A field that was never set must behave like a missing dict key."""
         resp = RenameResponse(
-            doc_id="abc", dry_run=True, old_name="X", new_name="Y"
+            record_id="abc", dry_run=True, old_name="X", new_name="Y"
         )
         assert "backup_path" not in resp
         assert resp.get("backup_path") is None

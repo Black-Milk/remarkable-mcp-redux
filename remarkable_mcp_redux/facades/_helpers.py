@@ -11,6 +11,7 @@ from ..exceptions import (
     ConflictError,
     KindMismatchError,
     NotFoundError,
+    RemarkableError,
     TrashedRecordError,
     ValidationError,
 )
@@ -116,22 +117,25 @@ def sibling_name_taken(
     return False
 
 
-def rename_record(
+def _validate_rename_target(
     cache: RemarkableCache,
-    base_path: Path,
     record_id: str,
     new_name: str,
     expected_kind: str,
-    dry_run: bool,
-) -> dict:
-    """Rename a document or folder. ``expected_kind`` is "document" or "folder".
+) -> tuple[DocumentMetadata | CollectionMetadata, str, str]:
+    """Run the kind-agnostic rename precondition checks.
+
+    Returns ``(meta, cleaned_name, old_name)`` on success. Sibling-uniqueness
+    is intentionally NOT checked here — for the singular path it consults the
+    live cache, and for the batch path it consults a running in-memory bucket
+    (so ``[A->Foo, B->Foo]`` flags the second item). Both paths layer their
+    own collision check on top of this helper.
 
     Raises:
-      - ``ValidationError``: empty ``new_name``.
+      - ``ValidationError``: empty/whitespace ``new_name``.
       - ``NotFoundError``: ``record_id`` not present in the cache.
       - ``KindMismatchError``: ``record_id`` is the wrong kind.
       - ``TrashedRecordError``: target is in the trash.
-      - ``ConflictError``: folder rename collides with an existing sibling.
     """
     cleaned_name = (new_name or "").strip()
     if not cleaned_name:
@@ -149,6 +153,30 @@ def rename_record(
         )
 
     old_name = meta.visible_name or record_id
+    return meta, cleaned_name, old_name
+
+
+def rename_record(
+    cache: RemarkableCache,
+    base_path: Path,
+    record_id: str,
+    new_name: str,
+    expected_kind: str,
+    dry_run: bool,
+) -> dict:
+    """Rename a document or folder. ``expected_kind`` is "document" or "folder".
+
+    Raises:
+      - ``ValidationError``: empty ``new_name``.
+      - ``NotFoundError``: ``record_id`` not present in the cache.
+      - ``KindMismatchError``: ``record_id`` is the wrong kind.
+      - ``TrashedRecordError``: target is in the trash.
+      - ``ConflictError``: folder rename collides with an existing sibling.
+    """
+    meta, cleaned_name, old_name = _validate_rename_target(
+        cache, record_id, new_name, expected_kind
+    )
+
     if expected_kind == "folder":
         parent = meta.parent or ""
         if cleaned_name.lower() != old_name.lower() and sibling_name_taken(
@@ -159,10 +187,9 @@ def rename_record(
                 f"parent '{parent or 'root'}'"
             )
 
-    id_key = f"{expected_kind}_id"
     if dry_run:
         return {
-            id_key: record_id,
+            "record_id": record_id,
             "dry_run": True,
             "old_name": old_name,
             "new_name": cleaned_name,
@@ -173,12 +200,115 @@ def rename_record(
         record_id, {"visibleName": cleaned_name}
     )
     return {
-        id_key: record_id,
+        "record_id": record_id,
         "dry_run": False,
         "old_name": old_name,
         "new_name": cleaned_name,
         "backup_path": str(backup),
     }
+
+
+def _build_folder_sibling_bucket(cache: RemarkableCache) -> dict[str, set[str]]:
+    """Pre-compute ``parent_id -> {lowercased folder names}`` for the folder rename batch.
+
+    Walking ``cache.iter_folders()`` once up front is O(F) instead of O(N*F)
+    (one scan per item). Callers mutate the returned dict as successful renames
+    land so subsequent items in the same batch see the new state and detect
+    in-batch collisions like ``[A->Foo, B->Foo]``.
+    """
+    bucket: dict[str, set[str]] = {}
+    for _folder_id, folder_meta in cache.iter_folders():
+        parent = folder_meta.parent or ""
+        name_lower = (folder_meta.visible_name or "").strip().lower()
+        bucket.setdefault(parent, set()).add(name_lower)
+    return bucket
+
+
+def apply_rename_batch(
+    cache: RemarkableCache,
+    base_path: Path,
+    items: list[dict],
+    expected_kind: str,
+    dry_run: bool,
+) -> list[dict]:
+    """Apply N rename items independently; per-item failures are returned as rows.
+
+    ``items`` is a list of ``{"id": str, "new_name": str}`` dicts. The whole-
+    request validation (non-empty, dict shape, unique ids) is the caller's
+    responsibility — this helper trusts the input shape and focuses on the
+    per-item walk.
+
+    For ``expected_kind="folder"`` the function pre-builds an in-memory
+    sibling bucket via ``_build_folder_sibling_bucket`` and updates it as
+    each successful rename lands, so ``[A->Foo, B->Foo]`` under the same
+    parent flags the second item with ``ConflictError`` even though the
+    on-disk cache has not yet seen the first write (or has, but the cache
+    object is not reloaded mid-loop).
+
+    Returns one dict per input item, in input order, suitable for passing
+    straight into ``BatchRenameItem.model_validate``.
+    """
+    sibling_bucket: dict[str, set[str]] | None = None
+    if expected_kind == "folder":
+        sibling_bucket = _build_folder_sibling_bucket(cache)
+
+    writer = MetadataWriter(base_path) if not dry_run else None
+    results: list[dict] = []
+    for item in items:
+        record_id = item["id"]
+        raw_new_name = item["new_name"]
+        try:
+            meta, cleaned_name, old_name = _validate_rename_target(
+                cache, record_id, raw_new_name, expected_kind
+            )
+
+            if expected_kind == "folder":
+                assert sibling_bucket is not None
+                parent = meta.parent or ""
+                bucket_for_parent = sibling_bucket.get(parent, set())
+                old_name_lower = old_name.lower()
+                new_name_lower = cleaned_name.lower()
+                if (
+                    new_name_lower != old_name_lower
+                    and new_name_lower in bucket_for_parent
+                ):
+                    raise ConflictError(
+                        f"A folder named '{cleaned_name}' already exists under "
+                        f"parent '{parent or 'root'}'"
+                    )
+
+            row: dict = {
+                "id": record_id,
+                "new_name": cleaned_name,
+                "success": True,
+                "old_name": old_name,
+            }
+            if not dry_run:
+                assert writer is not None
+                _old, _new, backup = writer.update_metadata(
+                    record_id, {"visibleName": cleaned_name}
+                )
+                row["backup_path"] = str(backup)
+
+            if expected_kind == "folder":
+                assert sibling_bucket is not None
+                parent = meta.parent or ""
+                bucket_for_parent = sibling_bucket.setdefault(parent, set())
+                bucket_for_parent.discard(old_name.lower())
+                bucket_for_parent.add(cleaned_name.lower())
+
+            results.append(row)
+        except RemarkableError as exc:
+            results.append(
+                {
+                    "id": record_id,
+                    "new_name": (raw_new_name or "").strip() or raw_new_name,
+                    "success": False,
+                    "error": exc.detail,
+                    "code": exc.code,
+                }
+            )
+    return results
 
 
 def move_record(
@@ -236,10 +366,9 @@ def move_record(
             )
 
     old_parent = meta.parent
-    id_key = f"{expected_kind}_id"
     if dry_run:
         return {
-            id_key: record_id,
+            "record_id": record_id,
             "dry_run": True,
             "old_parent": old_parent,
             "new_parent": new_parent,
@@ -248,7 +377,7 @@ def move_record(
     writer = MetadataWriter(base_path)
     _old, _new, backup = writer.update_metadata(record_id, {"parent": new_parent})
     return {
-        id_key: record_id,
+        "record_id": record_id,
         "dry_run": False,
         "old_parent": old_parent,
         "new_parent": new_parent,

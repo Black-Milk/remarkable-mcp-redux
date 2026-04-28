@@ -26,6 +26,8 @@ EXPECTED_READ_TOOLS = [
 EXPECTED_WRITE_TOOLS = [
     "remarkable_rename_document",
     "remarkable_rename_folder",
+    "remarkable_rename_documents_batch",
+    "remarkable_rename_folders_batch",
     "remarkable_move_document",
     "remarkable_move_folder",
     "remarkable_create_folder",
@@ -121,7 +123,7 @@ class TestWriteToolGating:
 
     @pytest.mark.integration
     def test_write_tools_register_when_enabled(self, monkeypatch):
-        """When the env flag is truthy, all eight write tools must register."""
+        """When the env flag is truthy, all write tools (singular + batch) must register."""
         monkeypatch.setenv(WRITE_TOOLS_ENV_VAR, "true")
         app, _ = build_server()
         tool_names = set(app._tool_manager._tools.keys())

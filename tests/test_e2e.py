@@ -134,6 +134,8 @@ class TestE2EStdio:
             for name in (
                 "remarkable_rename_document",
                 "remarkable_rename_folder",
+                "remarkable_rename_documents_batch",
+                "remarkable_rename_folders_batch",
                 "remarkable_move_document",
                 "remarkable_move_folder",
                 "remarkable_create_folder",
@@ -142,7 +144,7 @@ class TestE2EStdio:
                 "remarkable_cleanup_metadata_backups",
             ):
                 assert name in tool_names, f"Missing write tool: {name}"
-            assert len(tool_names) == 15  # 7 read + 8 write
+            assert len(tool_names) == 17  # 7 read + 10 write (8 singular + 2 batch)
         finally:
             proc.terminate()
             proc.wait()
