@@ -284,16 +284,41 @@ class TestCheckStatus:
 
 
 class TestCleanupRenders:
+    """Cleanup is restricted to ``<uuid>.pdf`` matches so a render_dir
+    pointing at a user folder (e.g. a Cowork project subdirectory) cannot
+    accidentally wipe unrelated files. See ``core/render.py``
+    ``_RENDER_FILENAME_RE``.
+    """
+
     @pytest.mark.unit
-    def test_removes_files(self, render_dir):
-        (render_dir / "doc1.pdf").write_bytes(b"fake pdf content 1")
-        (render_dir / "doc2.pdf").write_bytes(b"fake pdf content 2")
+    def test_removes_uuid_named_pdfs(self, render_dir):
+        """Files matching the renderer's own ``<doc_id>.pdf`` pattern are removed."""
+        (render_dir / "aaaaaaaa-1111-2222-3333-444444444444.pdf").write_bytes(
+            b"fake pdf content 1"
+        )
+        (render_dir / "bbbbbbbb-cccc-dddd-eeee-ffffffffffff.pdf").write_bytes(
+            b"fake pdf content 2"
+        )
         client = RemarkableClient(
             base_path=Path("/nonexistent"), render_dir=render_dir
         )
         result = client.render.cleanup_renders()
         assert result["files_removed"] == 2
         assert result["bytes_freed"] > 0
+        assert not list(render_dir.iterdir())
+
+    @pytest.mark.unit
+    def test_uppercase_uuid_pdfs_are_removed(self, render_dir):
+        """Hex digits are matched case-insensitively (defensive against future
+        firmware producing uppercase UUIDs)."""
+        (render_dir / "ABCDEF00-1234-5678-9ABC-DEF000000001.pdf").write_bytes(
+            b"upper-case uuid"
+        )
+        client = RemarkableClient(
+            base_path=Path("/nonexistent"), render_dir=render_dir
+        )
+        result = client.render.cleanup_renders()
+        assert result["files_removed"] == 1
         assert not list(render_dir.iterdir())
 
     @pytest.mark.unit
@@ -304,3 +329,68 @@ class TestCleanupRenders:
         result = client.render.cleanup_renders()
         assert result["files_removed"] == 0
         assert result["bytes_freed"] == 0
+
+    @pytest.mark.unit
+    def test_non_uuid_pdfs_are_preserved(self, render_dir):
+        """``doc1.pdf``, ``my-notes.pdf``, etc. are not renderer output and stay put."""
+        keep1 = render_dir / "doc1.pdf"
+        keep2 = render_dir / "my-notes.pdf"
+        keep1.write_bytes(b"user pdf 1")
+        keep2.write_bytes(b"user pdf 2")
+        client = RemarkableClient(
+            base_path=Path("/nonexistent"), render_dir=render_dir
+        )
+        result = client.render.cleanup_renders()
+        assert result["files_removed"] == 0
+        assert result["bytes_freed"] == 0
+        assert keep1.exists()
+        assert keep2.exists()
+
+    @pytest.mark.unit
+    def test_non_pdf_files_are_preserved(self, render_dir):
+        """Files with non-``.pdf`` extensions are never touched, even if their
+        stem happens to look like a UUID."""
+        keep_txt = render_dir / "aaaaaaaa-1111-2222-3333-444444444444.txt"
+        keep_md = render_dir / "notes.md"
+        keep_txt.write_bytes(b"a text file")
+        keep_md.write_bytes(b"# notes")
+        client = RemarkableClient(
+            base_path=Path("/nonexistent"), render_dir=render_dir
+        )
+        result = client.render.cleanup_renders()
+        assert result["files_removed"] == 0
+        assert keep_txt.exists()
+        assert keep_md.exists()
+
+    @pytest.mark.unit
+    def test_subdirectories_are_preserved(self, render_dir):
+        """Cleanup never recurses into subdirectories or removes them."""
+        subdir = render_dir / "archive"
+        subdir.mkdir()
+        nested = subdir / "aaaaaaaa-1111-2222-3333-444444444444.pdf"
+        nested.write_bytes(b"nested pdf")
+        client = RemarkableClient(
+            base_path=Path("/nonexistent"), render_dir=render_dir
+        )
+        result = client.render.cleanup_renders()
+        assert result["files_removed"] == 0
+        assert subdir.exists()
+        assert nested.exists()
+
+    @pytest.mark.unit
+    def test_mixed_dir_only_removes_uuid_pdfs(self, render_dir):
+        """Real-world scenario: render_dir is shared with user content."""
+        target = render_dir / "aaaaaaaa-1111-2222-3333-444444444444.pdf"
+        target.write_bytes(b"renderer output")
+        keep_user = render_dir / "scratch.pdf"
+        keep_user.write_bytes(b"user pdf")
+        keep_md = render_dir / "README.md"
+        keep_md.write_bytes(b"# project")
+        client = RemarkableClient(
+            base_path=Path("/nonexistent"), render_dir=render_dir
+        )
+        result = client.render.cleanup_renders()
+        assert result["files_removed"] == 1
+        assert not target.exists()
+        assert keep_user.exists()
+        assert keep_md.exists()

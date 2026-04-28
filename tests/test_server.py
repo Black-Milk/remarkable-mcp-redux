@@ -5,7 +5,11 @@ Verifies tools are registered (with the write-tool opt-in) and return expected s
 
 import pytest
 
-from remarkable_mcp_redux.config import WRITE_TOOLS_ENV_VAR
+from remarkable_mcp_redux.config import (
+    DEFAULT_RENDER_DIR,
+    RENDER_DIR_ENV_VAR,
+    WRITE_TOOLS_ENV_VAR,
+)
 from remarkable_mcp_redux.exceptions import BackupMissingError, NotFoundError
 from remarkable_mcp_redux.server import build_server, client, mcp
 
@@ -177,3 +181,32 @@ class TestWriteToolResponseShapes:
         c = RemarkableClient(base_path=fake_cache)
         with pytest.raises(BackupMissingError, match="(?i)backup"):
             c.writes.restore_metadata("aaaa-1111-2222-3333")
+
+
+class TestRenderDirEnvWiring:
+    """``build_server()`` must honor ``REMARKABLE_RENDER_DIR`` so deployments
+    can route merged PDFs into a folder their MCP client mounts (e.g. a
+    Cowork project subdirectory). See ``config.render_dir``.
+    """
+
+    @pytest.mark.integration
+    def test_unset_uses_default_render_dir(self, monkeypatch):
+        monkeypatch.delenv(RENDER_DIR_ENV_VAR, raising=False)
+        _, c = build_server()
+        assert c.render_dir == DEFAULT_RENDER_DIR
+
+    @pytest.mark.integration
+    def test_env_override_propagates_to_client(self, monkeypatch, tmp_path):
+        target = tmp_path / "renders"
+        monkeypatch.setenv(RENDER_DIR_ENV_VAR, str(target))
+        _, c = build_server()
+        assert c.render_dir == target.resolve()
+
+    @pytest.mark.integration
+    def test_env_override_propagates_to_renderer(self, monkeypatch, tmp_path):
+        """The same path must reach the underlying renderer so render output
+        actually lands there, not just on the client wrapper."""
+        target = tmp_path / "renders"
+        monkeypatch.setenv(RENDER_DIR_ENV_VAR, str(target))
+        _, c = build_server()
+        assert c._renderer.render_dir == target.resolve()

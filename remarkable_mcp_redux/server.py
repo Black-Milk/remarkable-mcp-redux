@@ -9,7 +9,7 @@ import sys
 from fastmcp import FastMCP
 
 from .client import RemarkableClient
-from .config import ensure_cairo_library_path
+from .config import ensure_cairo_library_path, render_dir
 from .tools import register_tools
 
 ensure_cairo_library_path()
@@ -18,9 +18,14 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
 
 def build_server() -> tuple[FastMCP, RemarkableClient]:
-    """Construct the FastMCP app and shared RemarkableClient."""
+    """Construct the FastMCP app and shared RemarkableClient.
+
+    The render directory is resolved from ``REMARKABLE_RENDER_DIR`` (see
+    ``config.render_dir``) so deployments can route merged PDFs into a
+    folder their MCP client can read directly.
+    """
     app = FastMCP("remarkable")
-    rm_client = RemarkableClient()
+    rm_client = RemarkableClient(render_dir=render_dir())
     register_tools(app, rm_client)
     return app, rm_client
 

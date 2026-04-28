@@ -20,6 +20,8 @@ WRITE_TOOLS_ENV_VAR = "REMARKABLE_ENABLE_WRITE_TOOLS"
 BACKUP_RETENTION_ENV_VAR = "REMARKABLE_BACKUP_RETENTION_COUNT"
 DEFAULT_BACKUP_RETENTION = 5
 
+RENDER_DIR_ENV_VAR = "REMARKABLE_RENDER_DIR"
+
 
 def ensure_cairo_library_path() -> None:
     """Make sure cairosvg can locate Homebrew's cairo on macOS.
@@ -39,6 +41,26 @@ def is_write_tools_enabled() -> bool:
     """
     val = os.environ.get(WRITE_TOOLS_ENV_VAR, "").strip().lower()
     return val in ("1", "true", "yes", "on")
+
+
+def render_dir() -> Path:
+    """Resolve the render output directory.
+
+    Reads ``REMARKABLE_RENDER_DIR``; ``~`` is expanded and the path is made
+    absolute. Falls back to ``DEFAULT_RENDER_DIR`` when unset or empty so
+    existing deployments keep writing to ``/tmp/remarkable-renders``.
+
+    Pointing this at a directory that an MCP client mounts into its
+    workspace (e.g. ``~/Documents/Claude/Projects/<name>/renders``) lets
+    the client read the merged PDFs directly via its native filesystem
+    tools, sidestepping the cross-client wire bug where ``ImageContent``
+    blocks are dropped from ``CallToolResult`` whenever
+    ``structuredContent`` is also set.
+    """
+    raw = os.environ.get(RENDER_DIR_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_RENDER_DIR
+    return Path(os.path.expanduser(raw)).resolve()
 
 
 def backup_retention_count() -> int:

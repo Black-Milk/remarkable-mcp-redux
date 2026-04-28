@@ -4,6 +4,7 @@ Mechanism-only: facades/render.py owns per-page source policy; this module just 
 """
 
 import io
+import re
 import shutil
 import subprocess
 import tempfile
@@ -24,6 +25,17 @@ from .page_sources import (
 from .pdf_passthrough import extract_pdf_page
 
 ensure_cairo_library_path()
+
+# Render artifacts are named ``<doc_id>.pdf`` where ``<doc_id>`` is a
+# reMarkable UUID. ``cleanup`` only removes files matching this pattern so
+# that a render_dir pointing at a user folder (e.g. a Cowork-mounted
+# project subdirectory) cannot accidentally wipe unrelated files dropped
+# alongside the renders. Match is case-insensitive on the hex digits to
+# match Python's UUID stringification behavior.
+_RENDER_FILENAME_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.pdf$",
+    re.IGNORECASE,
+)
 
 
 # ------------------------------------------------------------------
@@ -223,7 +235,14 @@ class RemarkableRenderer:
         )
 
     def cleanup(self) -> dict:
-        """Remove all files from the render directory.
+        """Remove render artifacts (``<uuid>.pdf``) from the render directory.
+
+        Only files whose name matches the renderer's own ``<doc_id>.pdf``
+        pattern are deleted. Anything else in the folder (user notes,
+        unrelated exports, hidden files, subdirectories) is preserved.
+        This makes the cleanup safe even when ``render_dir`` is configured
+        to point at a user-owned folder shared with an MCP client
+        workspace.
 
         Returns a plain dict matching the ``CleanupResponse`` field set; the
         facade wraps it into the Pydantic model at the boundary.
@@ -234,10 +253,13 @@ class RemarkableRenderer:
         files_removed = 0
         bytes_freed = 0
         for f in self.render_dir.iterdir():
-            if f.is_file():
-                bytes_freed += f.stat().st_size
-                f.unlink()
-                files_removed += 1
+            if not f.is_file():
+                continue
+            if not _RENDER_FILENAME_RE.match(f.name):
+                continue
+            bytes_freed += f.stat().st_size
+            f.unlink()
+            files_removed += 1
 
         return {"files_removed": files_removed, "bytes_freed": bytes_freed}
 

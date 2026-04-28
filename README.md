@@ -192,7 +192,14 @@ There are two distinct piles of files to keep separate:
 - **Render output** (`/tmp/remarkable-renders/` by default). Owned by this
   server. `remarkable_render_pages` and `remarkable_render_document` write
   `<doc_id>.pdf` here for Claude to read; `remarkable_cleanup_renders` clears
-  it. Nothing here is synced anywhere — it's a scratch directory.
+  it. Nothing here is synced anywhere — it's a scratch directory. The
+  location is overridable via the `REMARKABLE_RENDER_DIR` environment
+  variable; pointing it at a folder your MCP client already has filesystem
+  access to (Claude Cowork project subdirectory, Cursor workspace, Desktop
+  Commander root, …) lets the model read the merged PDFs directly with its
+  native file tools instead of going through the MCP image transport. See
+  [Render directory and the Claude Cowork workflow](#render-directory-and-the-claude-cowork-workflow)
+  below.
 
 Move, rename, and pin operations only touch the cache; they never update or
 relocate anything in the render directory.
@@ -350,6 +357,54 @@ remarkable_render_pages(doc_id="<uuid>")
 Priority: `page_indices` > `last_n` > `first_n` > all pages. An empty
 `page_indices=[]` is rejected explicitly.
 
+### Render directory and the Claude Cowork workflow
+
+By default, both render tools write `<doc_id>.pdf` to
+`/tmp/remarkable-renders/`. Set `REMARKABLE_RENDER_DIR` to a different
+absolute path (with `~` expansion) to redirect that output anywhere on
+disk. The directory is created on demand. `remarkable_cleanup_renders`
+only removes files matching the renderer's own `<uuid>.pdf` naming
+pattern, so anything else you happen to keep in the same folder is
+preserved.
+
+The recommended setup for [Claude Cowork](https://claude.com/blog/cowork-research-preview/)
+is to point the env var at a subdirectory of the project folder Cowork
+already mounts into its agent VM, for example
+`~/Documents/Claude/Projects/<project-name>/renders`. The model can then
+read the merged PDFs directly via Cowork's native file tools — no
+inline-image transport needed. This sidesteps a known cross-client MCP
+bug ([anthropics/claude-code#31208](https://github.com/anthropics/claude-code/issues/31208),
+[#15412](https://github.com/anthropics/claude-code/issues/15412),
+[modelcontextprotocol#1638](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/1638))
+where Claude Code, Claude Desktop, Cowork, OpenAI Codex, and VS Code all
+silently drop `ImageContent` blocks from tool results whenever
+`structuredContent` is also present. See
+[`docs/ongoing-mcp-bugs.md`](docs/ongoing-mcp-bugs.md) for the full
+analysis. The same workflow also works for Cursor agent mode, Desktop
+Commander, and any other client that can read host filesystem paths.
+
+Generate a ready-to-paste Claude Desktop config for a Cowork project with:
+
+```bash
+just mcp-config-cowork "My Project"
+```
+
+This emits an `mcpServers` block with `REMARKABLE_RENDER_DIR` set to
+`~/Documents/Claude/Projects/My Project/renders`.
+
+To enable the opt-in write-back tools at the same time (rename, move, pin,
+restore, create-folder, …), use the write-tools variant:
+
+```bash
+just mcp-config-cowork-write-tools-enabled "My Project"
+just mcp-config-cowork-write-tools-enabled "My Project" 10   # custom backup retention
+```
+
+This emits the same render-dir env var plus `REMARKABLE_ENABLE_WRITE_TOOLS=true`
+and, when supplied, `REMARKABLE_BACKUP_RETENTION_COUNT=<N>`. See
+[Write-back tools (opt-in)](#write-back-tools-opt-in) for the safety
+guarantees that come with that flag.
+
 ## Usage with Claude
 
 Once registered, Claude can access your reMarkable notebooks directly:
@@ -360,7 +415,10 @@ Once registered, Claude can access your reMarkable notebooks directly:
 
 > "What documents do I have on my reMarkable?"
 
-The rendered PDFs are saved to `/tmp/remarkable-renders/` and can be cleaned up with `remarkable_cleanup_renders`.
+Rendered PDFs default to `/tmp/remarkable-renders/` (override with
+`REMARKABLE_RENDER_DIR` — see
+[above](#render-directory-and-the-claude-cowork-workflow)) and can be
+cleaned up with `remarkable_cleanup_renders`.
 
 ## Companion Skills
 
