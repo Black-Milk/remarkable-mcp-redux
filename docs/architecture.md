@@ -26,18 +26,25 @@ through an architectural redux to keep it maintainable:
 - **Phase 4** replaced the legacy `return {"error": True, ...}` envelope with
   a typed `RemarkableError` exception hierarchy and a `@tool_error_boundary`
   decorator that translates exceptions into a uniform `ToolError` wire shape.
+- **Phase 5 (render artifacts)** added a transport-aware return for the
+  render tools. `tools/_artifacts.py::render_response_to_tool_result` wraps
+  the structured `RenderResponse` plus an MCP `EmbeddedResource` carrying
+  the merged PDF (base64 `BlobResourceContents`, `application/pdf`) in a
+  `ToolResult`, so MCP clients consume the rendered document from the tool
+  result without needing host filesystem access. `pdf_path` is retained on
+  the response for in-process/local diagnostics but is deprecated for
+  remote consumers.
 
-Phases 5 and 6 (resource links and `Context` injection respectively) were
-audited and cancelled — both target use cases that don't apply to a local
-stdio deployment, and their token/complexity economics didn't justify the
-implementation cost.
+Phase 6 (`Context` injection) was audited and cancelled — it targets use
+cases that don't apply to a local stdio deployment, and its token/complexity
+economics didn't justify the implementation cost.
 
 ## The three layers
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ tools/             FastMCP registrations — thin wrappers           │
-│   read.py, render.py, write.py, _boundary.py                       │
+│   read.py, render.py, write.py, _boundary.py, _artifacts.py        │
 └────────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼

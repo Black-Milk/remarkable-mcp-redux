@@ -59,7 +59,10 @@ remarkable_render_pages(doc_id="<uuid>", first_n=3)
 
 ### 3. Read and Interpret the Diagram
 
-Read the PDF and identify:
+The render tool returns the merged PDF as an MCP `EmbeddedResource`
+attached to the tool result (base64 `application/pdf`) plus the
+structured render metadata — read the artifact straight from the tool
+response and identify:
 - **Shapes**: rectangles, circles, diamonds, freeform boxes
 - **Text labels**: inside shapes or standalone
 - **Connections**: arrows, lines between shapes

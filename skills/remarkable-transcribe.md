@@ -68,7 +68,12 @@ remarkable_render_document(doc_id="<uuid>")
 
 ### 4. Read and Transcribe
 
-Read the rendered PDF (from the `pdf_path` in the response), then transcribe the handwriting to clean Markdown.
+The render tool result attaches the merged PDF as an MCP `EmbeddedResource`
+(base64 `application/pdf`) alongside the structured render metadata —
+read that artifact directly from the tool response and transcribe the
+handwriting to clean Markdown. The legacy `pdf_path` field on the
+structured response is host-local and may not be reachable from the
+client; prefer the embedded artifact.
 
 ### 5. Clean Up
 

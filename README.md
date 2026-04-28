@@ -464,11 +464,24 @@ The rendering pipeline dispatches each page on a typed `PageSource`:
   Surfaces as `code: "no_source"`.
 
 Successfully rendered pages are merged into one document via `pypdf` and
-written to `<render_dir>/<doc_id>.pdf`. The response carries
-`pages_rendered`, `pages_failed[]` (each entry stamped with a stable `code`
-plus a human `reason`), and — when at least one page rendered — a
-`sources_used` summary like `{"rm_v6": 5, "pdf_passthrough": 12}`. Claude
-reads the PDF and does whatever you need — transcription, diagram
+written to `<render_dir>/<doc_id>.pdf`. The MCP tool result is a
+`ToolResult` carrying both halves of the render:
+
+- **Structured content** — the `RenderResponse` JSON: `pages_rendered`,
+  `pages_failed[]` (each entry stamped with a stable `code` plus a human
+  `reason`), `page_indices`, and — when at least one page rendered — a
+  `sources_used` summary like `{"rm_v6": 5, "pdf_passthrough": 12}`. The
+  legacy `pdf_path` field is still populated for in-process/local
+  diagnostics, but remote MCP clients should treat it as deprecated.
+- **Embedded PDF artifact** — the merged PDF is attached as an MCP
+  `EmbeddedResource` (base64 `BlobResourceContents`, MIME
+  `application/pdf`) in the tool result's `content` blocks. Clients can
+  read the rendered document directly from the response without any
+  filesystem access to the host where the MCP server runs. Failure-only
+  renders (no pages rendered) skip the artifact and return only the
+  structured failure metadata.
+
+Claude reads the PDF and does whatever you need — transcription, diagram
 interpretation, summarisation.
 
 ## Tests

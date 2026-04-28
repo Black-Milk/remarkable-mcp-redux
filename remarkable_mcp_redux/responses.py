@@ -186,9 +186,14 @@ class RenderResponse(_BaseResponse):
     ``sources_used`` maps source-kind labels (e.g. ``"rm_v6"``,
     ``"pdf_passthrough"``) to per-kind page counts; absent when no pages rendered.
 
-    Note (deprecated path): ``pdf_path`` is a local-filesystem path. Phase 5
-    introduces transport-aware ``EmbeddedResource`` / ``ResourceLink`` returns
-    and marks ``pdf_path`` for removal.
+    Transport note: this model is the *structured* half of the MCP tool
+    result. The render tools wrap it via
+    ``tools._artifacts.render_response_to_tool_result``, which additionally
+    attaches the rendered PDF as an MCP ``EmbeddedResource`` content block
+    so clients without host filesystem access can still consume the output.
+    ``pdf_path`` remains for in-process/local diagnostics but should be
+    treated as deprecated by remote MCP clients in favour of the embedded
+    artifact.
     """
 
     pdf_path: str | None = None
