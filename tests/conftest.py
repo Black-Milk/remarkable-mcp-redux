@@ -1,5 +1,7 @@
-# ABOUTME: Shared pytest fixtures for remarkable-mcp tests.
-# ABOUTME: Provides synthetic reMarkable cache directories, folders, and helper factories.
+"""Shared pytest fixtures for remarkable-mcp tests.
+
+Provides synthetic reMarkable cache directories, folders, and helper factories.
+"""
 
 import json
 from pathlib import Path

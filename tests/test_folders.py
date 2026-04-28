@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the FoldersFacade (list) using synthetic cache fixtures.
-# ABOUTME: Exercises filtering, pagination, and parent-direct-child semantics.
+"""Unit tests for the FoldersFacade (list) using synthetic cache fixtures.
+
+Exercises filtering, pagination, and parent-direct-child semantics.
+"""
 
 import pytest
 

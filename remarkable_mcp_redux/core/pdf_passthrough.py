@@ -1,5 +1,7 @@
-# ABOUTME: Single-page PDF extraction via pypdf for the unannotated-PDF passthrough.
-# ABOUTME: Lets the renderer hand back source PDF pages when no .rm file exists.
+"""Single-page PDF extraction via pypdf for the unannotated-PDF passthrough.
+
+Lets the renderer hand back source PDF pages when no .rm file exists.
+"""
 
 import io
 from pathlib import Path

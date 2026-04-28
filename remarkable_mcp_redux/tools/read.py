@@ -1,5 +1,7 @@
-# ABOUTME: Read-only MCP tools: document/folder listing, document metadata, status diagnostics.
-# ABOUTME: Each tool is a thin wrapper that delegates to the appropriate per-domain facade.
+"""Read-only MCP tools: document/folder listing, document metadata, status diagnostics.
+
+Each tool is a thin wrapper that delegates to the appropriate per-domain facade.
+"""
 
 from fastmcp import FastMCP
 

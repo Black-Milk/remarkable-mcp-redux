@@ -1,5 +1,7 @@
-# ABOUTME: Loading helpers for reMarkable .metadata and .content JSON files.
-# ABOUTME: Parses raw cache files into validated Pydantic schema objects.
+"""Loading helpers for reMarkable .metadata and .content JSON files.
+
+Parses raw cache files into validated Pydantic schema objects.
+"""
 
 import json
 import logging

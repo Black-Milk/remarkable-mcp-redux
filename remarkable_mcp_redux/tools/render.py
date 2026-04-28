@@ -1,5 +1,7 @@
-# ABOUTME: Render-pipeline MCP tools: page-range render, full-document render, render-dir cleanup.
-# ABOUTME: Each tool delegates to the RenderFacade which owns the cache+renderer dependencies.
+"""Render-pipeline MCP tools: page-range render, full-document render, render-dir cleanup.
+
+Each tool delegates to the RenderFacade which owns the cache+renderer dependencies.
+"""
 
 from fastmcp import FastMCP
 

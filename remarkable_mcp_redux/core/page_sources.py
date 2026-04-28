@@ -1,5 +1,7 @@
-# ABOUTME: Typed PageSource union describing where a single page's bytes come from.
-# ABOUTME: Sits between facades/render.py (policy) and core/render.py (mechanism); add new variants here.
+"""Typed PageSource union describing where a single page's bytes come from.
+
+Sits between facades/render.py (policy) and core/render.py (mechanism); add new variants here.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path

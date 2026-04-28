@@ -1,5 +1,7 @@
-# ABOUTME: MCP tool subpackage entry point.
-# ABOUTME: Dispatches read, render, and (opt-in) write tool registrations to per-domain modules.
+"""MCP tool subpackage entry point.
+
+Dispatches read, render, and (opt-in) write tool registrations to per-domain modules.
+"""
 
 from fastmcp import FastMCP
 

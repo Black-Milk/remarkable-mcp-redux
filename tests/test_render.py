@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the RenderFacade plus StatusFacade diagnostics.
-# ABOUTME: Covers page-source dispatch, render_pages selection, status checks, and cleanup.
+"""Unit tests for the RenderFacade plus StatusFacade diagnostics.
+
+Covers page-source dispatch, render_pages selection, status checks, and cleanup.
+"""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch

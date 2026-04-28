@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the WritesFacade (rename, move, pin, restore, create_folder, cleanup).
-# ABOUTME: Covers backup retention, sync flags, dry-run mode, and trashed-record refusal.
+"""Unit tests for the WritesFacade (rename, move, pin, restore, create_folder, cleanup).
+
+Covers backup retention, sync flags, dry-run mode, and trashed-record refusal.
+"""
 
 import json
 from pathlib import Path

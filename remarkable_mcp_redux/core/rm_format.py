@@ -1,5 +1,7 @@
-# ABOUTME: Best-effort version probe for reMarkable .rm (.lines) files.
-# ABOUTME: Returns the format version (5 or 6) from the 43-byte header, or None.
+"""Best-effort version probe for reMarkable .rm (.lines) files.
+
+Returns the format version (5 or 6) from the 43-byte header, or None.
+"""
 
 from pathlib import Path
 

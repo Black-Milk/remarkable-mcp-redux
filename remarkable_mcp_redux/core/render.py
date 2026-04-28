@@ -1,5 +1,7 @@
-# ABOUTME: Rendering pipeline dispatcher for reMarkable pages (typed PageSource union).
-# ABOUTME: Mechanism-only: facades/render.py owns per-page source policy; this module just executes.
+"""Rendering pipeline dispatcher for reMarkable pages (typed PageSource union).
+
+Mechanism-only: facades/render.py owns per-page source policy; this module just executes.
+"""
 
 import io
 import shutil

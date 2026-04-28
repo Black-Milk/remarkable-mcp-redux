@@ -1,5 +1,7 @@
-# ABOUTME: Opt-in write-back MCP tools: rename, move, pin, create-folder, restore, backup cleanup.
-# ABOUTME: Each tool delegates to WritesFacade; only registered when REMARKABLE_ENABLE_WRITE_TOOLS is set.
+"""Opt-in write-back MCP tools: rename, move, pin, create-folder, restore, backup cleanup.
+
+Each tool delegates to WritesFacade; only registered when REMARKABLE_ENABLE_WRITE_TOOLS is set.
+"""
 
 from fastmcp import FastMCP
 

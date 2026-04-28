@@ -1,5 +1,7 @@
-# ABOUTME: DocumentsFacade — read-only operations on DocumentType records.
-# ABOUTME: Filters/paginates list responses and produces detailed get_info responses.
+"""DocumentsFacade — read-only operations on DocumentType records.
+
+Filters/paginates list responses and produces detailed get_info responses.
+"""
 
 from ..core.cache import RemarkableCache
 from ..exceptions import KindMismatchError, NotFoundError

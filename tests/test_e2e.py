@@ -1,5 +1,7 @@
-# ABOUTME: End-to-end tests for the remarkable MCP server via stdio subprocess.
-# ABOUTME: Sends JSON-RPC messages over stdin/stdout to verify the full transport layer.
+"""End-to-end tests for the remarkable MCP server via stdio subprocess.
+
+Sends JSON-RPC messages over stdin/stdout to verify the full transport layer.
+"""
 
 import json
 import os

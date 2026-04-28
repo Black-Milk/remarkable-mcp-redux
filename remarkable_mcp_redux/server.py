@@ -1,5 +1,7 @@
-# ABOUTME: FastMCP server entry point for the remarkable-mcp redux package.
-# ABOUTME: Builds the FastMCP app, registers tools, and runs over stdio.
+"""FastMCP server entry point for the remarkable-mcp redux package.
+
+Builds the FastMCP app, registers tools, and runs over stdio.
+"""
 
 import logging
 import sys

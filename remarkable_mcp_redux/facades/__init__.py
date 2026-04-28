@@ -1,5 +1,7 @@
-# ABOUTME: Facades subpackage — per-domain orchestration on top of cache + render mechanisms.
-# ABOUTME: Re-exports the five facade classes for ergonomic imports from the composition root.
+"""Facades subpackage — per-domain orchestration on top of cache + render mechanisms.
+
+Re-exports the five facade classes for ergonomic imports from the composition root.
+"""
 
 from .documents import DocumentsFacade
 from .folders import FoldersFacade

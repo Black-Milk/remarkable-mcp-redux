@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the DocumentsFacade (list + get_info) using synthetic cache fixtures.
-# ABOUTME: Exercises filtering, pagination, and the include_page_ids opt-out.
+"""Unit tests for the DocumentsFacade (list + get_info) using synthetic cache fixtures.
+
+Exercises filtering, pagination, and the include_page_ids opt-out.
+"""
 
 import json
 from datetime import UTC, datetime

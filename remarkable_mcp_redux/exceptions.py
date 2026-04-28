@@ -1,5 +1,6 @@
-# ABOUTME: Typed exception hierarchy raised by facades; converted to ToolError envelopes at the
-# ABOUTME: tools/ boundary so MCP clients keep seeing the {"error": True, "detail": ...} wire shape.
+"""Typed exception hierarchy raised by facades; converted to ToolError envelopes at the
+tools/ boundary so MCP clients keep seeing the {"error": True, "detail": ...} wire shape.
+"""
 
 from __future__ import annotations
 

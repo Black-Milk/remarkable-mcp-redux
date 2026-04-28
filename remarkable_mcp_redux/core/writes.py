@@ -1,5 +1,7 @@
-# ABOUTME: Atomic, backup-protected metadata writes for the reMarkable cache.
-# ABOUTME: Used only by the opt-in write-back MCP tools (rename, move, pin, restore, folders).
+"""Atomic, backup-protected metadata writes for the reMarkable cache.
+
+Used only by the opt-in write-back MCP tools (rename, move, pin, restore, folders).
+"""
 
 import json
 import logging

@@ -1,5 +1,7 @@
-# ABOUTME: Integration tests asserting the per-tool ToolAnnotations matrix on the FastMCP server.
-# ABOUTME: Drives every assertion off the live registry so changes happen in annotations.py only.
+"""Integration tests asserting the per-tool ToolAnnotations matrix on the FastMCP server.
+
+Drives every assertion off the live registry so changes happen in annotations.py only.
+"""
 
 import pytest
 

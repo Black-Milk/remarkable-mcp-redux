@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the page-source dispatcher in core.render.
-# ABOUTME: Covers each PageSource variant in isolation, mocking rmc/cairosvg only for v6.
+"""Unit tests for the page-source dispatcher in core.render.
+
+Covers each PageSource variant in isolation, mocking rmc/cairosvg only for v6.
+"""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch

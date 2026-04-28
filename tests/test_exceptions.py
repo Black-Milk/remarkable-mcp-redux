@@ -1,5 +1,6 @@
-# ABOUTME: Contract tests for the typed exception hierarchy and the tool_error_boundary
-# ABOUTME: decorator that converts RemarkableError subclasses into ToolError wire envelopes.
+"""Contract tests for the typed exception hierarchy and the tool_error_boundary
+decorator that converts RemarkableError subclasses into ToolError wire envelopes.
+"""
 
 import pytest
 

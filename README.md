@@ -373,38 +373,82 @@ To use these, copy the skill files into your `~/.claude/skills/` directory (or s
 
 ## Architecture
 
+The package is organised in three layers — `tools/` registers MCP surfaces,
+`facades/` orchestrates per-domain logic, `core/` provides the underlying
+mechanisms. Cross-cutting contracts (annotations, response models, exceptions)
+sit at the package root so every layer shares the same vocabulary.
+
 ```
 remarkable-mcp-redux/
-├── remarkable_mcp_redux/           # Package
-│   ├── __init__.py
-│   ├── config.py                   # Default paths, env-flag helpers, retention, Cairo setup
-│   ├── schemas.py                  # Pydantic models for .metadata and .content JSON
-│   ├── _cache.py                   # Read-only cache loader (parses raw JSON via schemas)
-│   │                               # - is_descendant_of / count_descendants for cycle safety
-│   ├── _page_sources.py            # Typed PageSource union (rm_v6, rm_v5, pdf_passthrough, missing)
-│   ├── _rm_format.py               # .rm header version probe (returns 5 / 6 / None)
-│   ├── _pdf_passthrough.py         # Single-page extraction from source PDFs (pypdf)
-│   ├── _render.py                  # render_page_source dispatcher + typed RenderError hierarchy
-│   ├── _writes.py                  # Atomic, backup-protected mutations:
-│   │                               # - MetadataWriter (rename / move / pin)
-│   │                               # - MetadataRestorer (undo from latest backup)
-│   │                               # - MetadataCreator (folder creation)
-│   │                               # - cleanup_backups (bulk pruning helper)
-│   ├── client.py                   # RemarkableClient facade (public API)
-│   ├── _tools.py                   # MCP tool registration (read + opt-in write)
-│   └── server.py                   # FastMCP entry point + build_server()
+├── remarkable_mcp_redux/             # Package
+│   ├── __init__.py                   # Re-exports RemarkableClient + default paths
+│   ├── client.py                     # Composition root: cache + renderer + facades
+│   ├── server.py                     # FastMCP entry point + build_server()
+│   ├── config.py                     # Default paths, env-flag helpers, Cairo setup
+│   ├── schemas.py                    # Pydantic models for .metadata and .content JSON
+│   ├── annotations.py                # Registry: title + ToolAnnotations for all 15 tools
+│   ├── responses.py                  # Pydantic response models + sparse-by-default _BaseResponse
+│   ├── exceptions.py                 # Typed RemarkableError hierarchy raised by facades
+│   ├── core/                         # Low-level mechanisms (no MCP awareness)
+│   │   ├── cache.py                  # Read-only cache loader (parses JSON via schemas)
+│   │   │                             #   + is_descendant_of / count_descendants
+│   │   ├── render.py                 # Rendering pipeline + dispatcher + typed RenderError hierarchy
+│   │   ├── writes.py                 # Atomic, backup-protected metadata mutations
+│   │   │                             #   MetadataWriter / MetadataRestorer / MetadataCreator
+│   │   │                             #   + cleanup_backups bulk pruning helper
+│   │   ├── page_sources.py           # Typed PageSource union (rm_v6, rm_v5, pdf_passthrough, missing)
+│   │   ├── rm_format.py              # .rm header version probe (returns 5 / 6 / None)
+│   │   └── pdf_passthrough.py        # Single-page extraction from source PDFs (pypdf)
+│   ├── facades/                      # Per-domain orchestration; raise RemarkableError on failure
+│   │   ├── documents.py              # DocumentsFacade — list/get_info, kind-checked
+│   │   ├── folders.py                # FoldersFacade — list with parent/listing validation
+│   │   ├── render.py                 # RenderFacade — render_pages / render_document / cleanup
+│   │   ├── status.py                 # StatusFacade — diagnostics
+│   │   ├── writes.py                 # WritesFacade — rename/move/pin/restore/create-folder/cleanup
+│   │   └── _helpers.py               # Shared validation + dry-run + write-execution helpers
+│   └── tools/                        # MCP tool surface (thin wrappers over facades)
+│       ├── __init__.py               # register_tools(): wires read/render/write registrations
+│       ├── _boundary.py              # @tool_error_boundary — RemarkableError → ToolError envelope
+│       ├── read.py                   # 4 read tools (status, list_documents, list_folders, get_info)
+│       ├── render.py                 # 3 render tools (render_pages, render_document, cleanup_renders)
+│       └── write.py                  # 8 opt-in write tools, gated on REMARKABLE_ENABLE_WRITE_TOOLS
 ├── skills/
-│   ├── remarkable-transcribe.md    # Handwriting → Markdown skill
-│   └── remarkable-diagram.md       # Diagram → Excalidraw skill
+│   ├── remarkable-transcribe.md      # Handwriting → Markdown skill
+│   └── remarkable-diagram.md         # Diagram → Excalidraw skill
+├── docs/
+│   ├── architecture.md               # Layered design + contracts (start here for internals)
+│   ├── annotated-pdf-compositing.md  # Future: compositing strokes onto annotated PDFs
+│   └── ongoing-mcp-bugs.md           # Known issues + workarounds
 └── tests/
-    ├── conftest.py                 # Synthetic cache fixtures (docs + folders + nested + iOS)
-    ├── test_remarkable_client.py   # Unit tests
-    ├── test_server.py              # Integration / write-tool gating tests
-    ├── test_rm_format.py           # .rm header version probe
-    ├── test_pdf_passthrough.py     # Single-page PDF extraction
-    ├── test_render_dispatch.py     # PageSource dispatch round-trip
-    └── test_e2e.py                 # End-to-end stdio tests
+    ├── conftest.py                   # Synthetic cache fixtures (docs + folders + nested + iOS)
+    ├── test_documents.py             # DocumentsFacade unit tests
+    ├── test_folders.py               # FoldersFacade unit tests
+    ├── test_writes.py                # WritesFacade unit tests
+    ├── test_render.py                # RenderFacade unit tests
+    ├── test_cache.py                 # RemarkableCache unit tests
+    ├── test_rm_format.py             # .rm header version probe
+    ├── test_pdf_passthrough.py       # Single-page PDF extraction
+    ├── test_render_dispatch.py       # PageSource dispatch round-trip
+    ├── test_annotations.py           # Contract: every tool has title + ToolAnnotations
+    ├── test_responses.py             # Contract: Pydantic models round-trip + sparse model_dump
+    ├── test_exceptions.py            # Contract: typed exception hierarchy + tool_error_boundary
+    ├── test_server.py                # Integration: tool registration + write-tool gating
+    └── test_e2e.py                   # End-to-end stdio tests
 ```
+
+### Response & error contract
+
+Every facade method returns a Pydantic model from `responses.py` on success
+and raises a typed `RemarkableError` subclass from `exceptions.py` on failure.
+Each tool registration declares `output_schema=<Model>.model_json_schema()`,
+so MCP clients receive a JSON Schema for every response. The
+`@tool_error_boundary` decorator catches facade-raised exceptions at the wire
+and serializes them as a `ToolError` envelope (`error: True`, `detail: <msg>`,
+`code: <stable-id>`). Response payloads are sparse by default — unset optional
+fields are omitted from the wire to keep token usage tight. See
+[`docs/architecture.md`](docs/architecture.md) for the long-form rationale.
+
+### Rendering pipeline
 
 The rendering pipeline dispatches each page on a typed `PageSource`:
 

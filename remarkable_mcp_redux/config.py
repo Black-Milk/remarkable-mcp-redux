@@ -1,5 +1,7 @@
-# ABOUTME: Default paths and environment configuration for the remarkable-mcp server.
-# ABOUTME: Centralizes cache location, render dir, and macOS Cairo library path setup.
+"""Default paths and environment configuration for the remarkable-mcp server.
+
+Centralizes cache location, render dir, and macOS Cairo library path setup.
+"""
 
 import os
 from pathlib import Path

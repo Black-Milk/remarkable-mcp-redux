@@ -1,5 +1,7 @@
-# ABOUTME: Per-tool ToolAnnotations + human-readable titles for the FastMCP wire surface.
-# ABOUTME: Centralized so tools/*.py modules stay free of annotation boilerplate at every @mcp.tool() site.
+"""Per-tool ToolAnnotations + human-readable titles for the FastMCP wire surface.
+
+Centralized so tools/*.py modules stay free of annotation boilerplate at every @mcp.tool() site.
+"""
 
 from mcp.types import ToolAnnotations
 

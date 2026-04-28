@@ -1,6 +1,7 @@
-# ABOUTME: Shared helpers for the facades subpackage: pagination, parent/kind validation,
-# ABOUTME: sibling-name uniqueness, and the rename/move record operations. Raises typed
-# ABOUTME: RemarkableError subclasses on validation failure (Phase 4).
+"""Shared helpers for the facades subpackage: pagination, parent/kind validation,
+sibling-name uniqueness, and the rename/move record operations. Raises typed
+RemarkableError subclasses on validation failure (Phase 4).
+"""
 
 from pathlib import Path
 

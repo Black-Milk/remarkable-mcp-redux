@@ -1,5 +1,7 @@
-# ABOUTME: Integration tests for the MCP server tool registration and response shapes.
-# ABOUTME: Verifies tools are registered (with the write-tool opt-in) and return expected shapes.
+"""Integration tests for the MCP server tool registration and response shapes.
+
+Verifies tools are registered (with the write-tool opt-in) and return expected shapes.
+"""
 
 import pytest
 

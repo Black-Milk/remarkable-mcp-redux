@@ -1,5 +1,7 @@
-# ABOUTME: Pydantic models for raw reMarkable .metadata and .content JSON files.
-# ABOUTME: Normalizes optional fields, type discriminants, page formats, and tags.
+"""Pydantic models for raw reMarkable .metadata and .content JSON files.
+
+Normalizes optional fields, type discriminants, page formats, and tags.
+"""
 
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal

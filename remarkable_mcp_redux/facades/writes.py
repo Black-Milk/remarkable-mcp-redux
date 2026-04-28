@@ -1,5 +1,7 @@
-# ABOUTME: WritesFacade — opt-in mutating operations on .metadata records.
-# ABOUTME: Renames, moves, pin toggles, folder creation, restore, and backup cleanup.
+"""WritesFacade — opt-in mutating operations on .metadata records.
+
+Renames, moves, pin toggles, folder creation, restore, and backup cleanup.
+"""
 
 from pathlib import Path
 

@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for RemarkableCache ancestry/descendant helpers using synthetic fixtures.
-# ABOUTME: Constructs RemarkableCache directly without instantiating RemarkableClient.
+"""Unit tests for RemarkableCache ancestry/descendant helpers using synthetic fixtures.
+
+Constructs RemarkableCache directly without instantiating RemarkableClient.
+"""
 
 import json
 

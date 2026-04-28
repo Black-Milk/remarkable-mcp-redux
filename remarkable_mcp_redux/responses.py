@@ -1,5 +1,7 @@
-# ABOUTME: Pydantic response models that define the MCP wire shape for every tool.
-# ABOUTME: Distinct from schemas.py (on-disk reMarkable JSON); they MUST NOT depend on each other.
+"""Pydantic response models that define the MCP wire shape for every tool.
+
+Distinct from schemas.py (on-disk reMarkable JSON); they MUST NOT depend on each other.
+"""
 
 from typing import Any
 

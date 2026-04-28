@@ -1,5 +1,7 @@
-# ABOUTME: StatusFacade — system diagnostics: cache existence, document count, rmc/cairo availability.
-# ABOUTME: Cross-cutting health check; not tied to a single domain so it lives on its own facade.
+"""StatusFacade — system diagnostics: cache existence, document count, rmc/cairo availability.
+
+Cross-cutting health check; not tied to a single domain so it lives on its own facade.
+"""
 
 from pathlib import Path
 

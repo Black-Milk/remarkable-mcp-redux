@@ -1,5 +1,7 @@
-# ABOUTME: Contract tests for the Pydantic MCP response models in responses.py.
-# ABOUTME: Schema sanity, dict-compat behaviour, and round-trip stability for representative payloads.
+"""Contract tests for the Pydantic MCP response models in responses.py.
+
+Schema sanity, dict-compat behaviour, and round-trip stability for representative payloads.
+"""
 
 import pytest
 

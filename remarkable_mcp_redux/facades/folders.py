@@ -1,5 +1,7 @@
-# ABOUTME: FoldersFacade — read-only operations on CollectionType records.
-# ABOUTME: Filters and paginates folder listing responses.
+"""FoldersFacade — read-only operations on CollectionType records.
+
+Filters and paginates folder listing responses.
+"""
 
 from ..core.cache import RemarkableCache
 from ..responses import FolderEntry, FolderListResponse

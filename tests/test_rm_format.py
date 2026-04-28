@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for the .rm header version probe in core.rm_format.
-# ABOUTME: Covers v5/v6/short-file/missing-file/garbage cases.
+"""Unit tests for the .rm header version probe in core.rm_format.
+
+Covers v5/v6/short-file/missing-file/garbage cases.
+"""
 
 import pytest
 

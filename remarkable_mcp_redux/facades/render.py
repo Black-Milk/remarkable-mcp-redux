@@ -1,5 +1,7 @@
-# ABOUTME: RenderFacade — orchestrates page-source resolution and PDF rendering.
-# ABOUTME: Owns the cleanup_renders sweeper. Diagnostics live in StatusFacade.
+"""RenderFacade — orchestrates page-source resolution and PDF rendering.
+
+Owns the cleanup_renders sweeper. Diagnostics live in StatusFacade.
+"""
 
 from pathlib import Path
 

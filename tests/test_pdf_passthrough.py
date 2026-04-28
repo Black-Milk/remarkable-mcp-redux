@@ -1,5 +1,7 @@
-# ABOUTME: Unit tests for single-page PDF extraction in core.pdf_passthrough.
-# ABOUTME: Covers round-trip extraction, out-of-range, and missing-source cases.
+"""Unit tests for single-page PDF extraction in core.pdf_passthrough.
+
+Covers round-trip extraction, out-of-range, and missing-source cases.
+"""
 
 import io
 

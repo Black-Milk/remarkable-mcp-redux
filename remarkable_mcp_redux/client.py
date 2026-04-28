@@ -1,5 +1,7 @@
-# ABOUTME: RemarkableClient composition root: owns cache + renderer, exposes per-domain facades.
-# ABOUTME: All business logic lives on the facades; this class only wires them together.
+"""RemarkableClient composition root: owns cache + renderer, exposes per-domain facades.
+
+All business logic lives on the facades; this class only wires them together.
+"""
 
 from pathlib import Path
 

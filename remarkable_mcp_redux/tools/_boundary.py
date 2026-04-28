@@ -1,5 +1,6 @@
-# ABOUTME: tool_error_boundary decorator that catches RemarkableError raised by facades and
-# ABOUTME: serializes a ToolError envelope so MCP clients keep the legacy {"error": True, ...} shape.
+"""tool_error_boundary decorator that catches RemarkableError raised by facades and
+serializes a ToolError envelope so MCP clients keep the legacy {"error": True, ...} shape.
+"""
 
 from __future__ import annotations
 
