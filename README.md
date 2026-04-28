@@ -2,9 +2,9 @@
 
 An MCP server that gives Claude direct access to your reMarkable tablet's notebooks. Search documents, render handwritten pages to PDF, and let Claude transcribe your handwriting or convert hand-drawn diagrams into editable formats — all from your local machine, no API keys required.
 
-## About this fork
+## What it offers
 
-This is a fork of [SamMorrowDrums/remarkable-mcp](https://github.com/SamMorrowDrums/remarkable-mcp). The core idea and rendering pipeline originate there. This fork reorganises the project into a proper Python package (`remarkable_mcp_redux`) and adds:
+`remarkable-mcp-redux` is an independently maintained MCP server organised as a proper Python package (`remarkable_mcp_redux`). It provides:
 
 - **Pydantic schema validation** at the cache boundary — `.metadata` and `.content` JSON is parsed and validated into typed models, with ISO-8601 timestamp normalisation and discriminated unions for document vs. folder types.
 - **Enriched document metadata** — responses include `file_type`, `document_title`, `authors`, `tags`, `annotated`, `original_page_count`, and `size_in_bytes` sourced from `.content`.

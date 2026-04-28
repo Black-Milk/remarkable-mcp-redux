@@ -8,12 +8,10 @@ extending, or porting the code.
 
 ## Why this exists
 
-This repository is a fork of
-[`SamMorrowDrums/remarkable-mcp`](https://github.com/SamMorrowDrums/remarkable-mcp).
-The original was a single-module MCP server with handful of tools. This fork
-grew it into a 15-tool surface with opt-in writes, atomic backups, typed
-schemas, and a Pydantic-validated cache loader, then performed an
-architectural redux to keep the code maintainable as the surface area grew:
+`remarkable_mcp_redux` exposes a 15-tool surface over the local reMarkable
+desktop cache, with opt-in writes, atomic backups, typed schemas, and a
+Pydantic-validated cache loader. As the surface area grew, the code went
+through an architectural redux to keep it maintainable:
 
 - **Phase 0** introduced the `core/` / `facades/` / `tools/` layering to
   separate mechanism from policy from MCP wiring.
