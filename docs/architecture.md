@@ -28,12 +28,20 @@ through an architectural redux to keep it maintainable:
   decorator that translates exceptions into a uniform `ToolError` wire shape.
 - **Phase 5 (render artifacts)** added a transport-aware return for the
   render tools. `tools/_artifacts.py::render_response_to_tool_result` wraps
-  the structured `RenderResponse` plus an MCP `EmbeddedResource` carrying
-  the merged PDF (base64 `BlobResourceContents`, `application/pdf`) in a
-  `ToolResult`, so MCP clients consume the rendered document from the tool
-  result without needing host filesystem access. `pdf_path` is retained on
-  the response for in-process/local diagnostics but is deprecated for
-  remote consumers.
+  the structured `RenderResponse` in a `ToolResult` and, by default,
+  attaches one PNG `ImageContent` block per rendered page (rasterised
+  from the merged PDF via `core/rasterize.py` ↪ `pypdfium2` + Pillow).
+  PNG images were chosen as the default because Claude Desktop strips
+  `application/pdf` `EmbeddedResource` payloads — the model needs visual
+  page content delivered as `ImageContent` to actually see the render.
+  The merged PDF stays addressable via `RenderResponse.pdf_path` for
+  clients with host filesystem access (Cursor agent mode, Desktop
+  Commander), and the PDF `EmbeddedResource` block is still available
+  behind the `attach_pdf_resource=True` opt-in for spec-compliant
+  clients that consume non-image embedded resources. The render tools
+  also expose `attach_images=False`, `image_dpi`, and `max_image_pages`
+  knobs so callers can tune payload size or skip rasterisation when only
+  metadata is wanted.
 
 Phase 6 (`Context` injection) was audited and cancelled — it targets use
 cases that don't apply to a local stdio deployment, and its token/complexity
@@ -57,7 +65,7 @@ economics didn't justify the implementation cost.
 ┌────────────────────────────────────────────────────────────────────┐
 │ core/              Mechanisms — no MCP awareness                   │
 │   cache.py, render.py, writes.py, page_sources.py,                 │
-│   rm_format.py, pdf_passthrough.py                                 │
+│   rm_format.py, pdf_passthrough.py, rasterize.py                   │
 └────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -465,23 +465,36 @@ The rendering pipeline dispatches each page on a typed `PageSource`:
 
 Successfully rendered pages are merged into one document via `pypdf` and
 written to `<render_dir>/<doc_id>.pdf`. The MCP tool result is a
-`ToolResult` carrying both halves of the render:
+`ToolResult` carrying multiple parts of the render:
 
 - **Structured content** — the `RenderResponse` JSON: `pages_rendered`,
   `pages_failed[]` (each entry stamped with a stable `code` plus a human
-  `reason`), `page_indices`, and — when at least one page rendered — a
-  `sources_used` summary like `{"rm_v6": 5, "pdf_passthrough": 12}`. The
-  legacy `pdf_path` field is still populated for in-process/local
-  diagnostics, but remote MCP clients should treat it as deprecated.
-- **Embedded PDF artifact** — the merged PDF is attached as an MCP
-  `EmbeddedResource` (base64 `BlobResourceContents`, MIME
-  `application/pdf`) in the tool result's `content` blocks. Clients can
-  read the rendered document directly from the response without any
-  filesystem access to the host where the MCP server runs. Failure-only
-  renders (no pages rendered) skip the artifact and return only the
-  structured failure metadata.
+  `reason`), `page_indices`, a `sources_used` summary like
+  `{"rm_v6": 5, "pdf_passthrough": 12}` when at least one page rendered,
+  and `pdf_path` pointing at the merged PDF on the host. `pdf_path` is
+  the right hand-off for clients that can read host filesystem paths
+  (Cursor agent mode, Desktop Commander).
+- **PNG image blocks (default on)** — the merged PDF is rasterised to one
+  `ImageContent` block per rendered page (default 150 DPI) and attached
+  to the tool result's `content`. This is the path that works in Claude
+  Desktop, which silently drops `application/pdf` `EmbeddedResource`
+  payloads. The render tools accept `attach_images=False` to skip
+  rasterisation, `image_dpi=<int>` to tune sharpness vs. payload size,
+  and `max_image_pages=<int>` (default 10) as a hard cap; renders larger
+  than the cap return a `TextContent` note pointing at `pdf_path` /
+  suggesting a narrower selection instead of attaching the full image
+  batch.
+- **PDF EmbeddedResource (opt-in)** — pass `attach_pdf_resource=True` to
+  also attach the merged PDF as an MCP `EmbeddedResource` (base64
+  `BlobResourceContents`, MIME `application/pdf`). Off by default
+  because Claude Desktop strips PDF resources; useful for spec-compliant
+  clients that consume non-image embedded resources.
 
-Claude reads the PDF and does whatever you need — transcription, diagram
+Failure-only renders (no pages rendered) skip every artifact and return
+only the structured failure metadata.
+
+Claude reads the resulting page images (or the PDF, for clients that
+prefer it) and does whatever you need — transcription, diagram
 interpretation, summarisation.
 
 ## Tests

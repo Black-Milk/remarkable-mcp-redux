@@ -10,6 +10,8 @@ dependencies = [
     "pypdf>=6.10.2",
     "rmc>=0.3.0",
     "pydantic>=2.13.3",
+    "pypdfium2>=4.30",
+    "pillow>=11.0",
 ]
 
 [project.optional-dependencies]

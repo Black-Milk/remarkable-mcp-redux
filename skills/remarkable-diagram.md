@@ -59,16 +59,23 @@ remarkable_render_pages(doc_id="<uuid>", first_n=3)
 
 ### 3. Read and Interpret the Diagram
 
-The render tool returns the merged PDF as an MCP `EmbeddedResource`
-attached to the tool result (base64 `application/pdf`) plus the
-structured render metadata — read the artifact straight from the tool
-response and identify:
+The render tool result attaches one PNG `ImageContent` block per
+rendered page (default 150 DPI) alongside the structured render
+metadata — read those page images straight from the tool response and
+identify:
 - **Shapes**: rectangles, circles, diamonds, freeform boxes
 - **Text labels**: inside shapes or standalone
 - **Connections**: arrows, lines between shapes
 - **Groupings**: visual clusters, containment relationships
 - **Annotations**: callout text, notes outside the main diagram
 - **Layout**: hierarchical (tree), flow (left-to-right), cycle, matrix, etc.
+
+The merged PDF is also written to disk and reported as `pdf_path` in
+the structured metadata; clients with host filesystem access (Cursor
+agent mode, Desktop Commander) can read it from there, or pass
+`attach_pdf_resource=True` to the render tool to additionally receive
+the PDF as an `EmbeddedResource` (off by default because Claude Desktop
+drops it).
 
 ### 3. Create Live Excalidraw Preview
 

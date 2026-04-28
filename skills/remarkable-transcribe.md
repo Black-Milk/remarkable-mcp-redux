@@ -68,12 +68,22 @@ remarkable_render_document(doc_id="<uuid>")
 
 ### 4. Read and Transcribe
 
-The render tool result attaches the merged PDF as an MCP `EmbeddedResource`
-(base64 `application/pdf`) alongside the structured render metadata —
-read that artifact directly from the tool response and transcribe the
-handwriting to clean Markdown. The legacy `pdf_path` field on the
-structured response is host-local and may not be reachable from the
-client; prefer the embedded artifact.
+The render tool result attaches one PNG `ImageContent` block per
+rendered page (default 150 DPI) alongside the structured render metadata
+— read those page images directly from the tool response and transcribe
+the handwriting to clean Markdown. The merged PDF also stays on disk
+and is reported as `pdf_path` in the structured metadata for clients
+with host filesystem access (Cursor agent mode, Desktop Commander); the
+PDF can additionally be requested as an MCP `EmbeddedResource` by
+passing `attach_pdf_resource=True` to the render tool, but Claude
+Desktop drops PDF resources, so the inline PNG images are the right
+default for transcription.
+
+If you need to transcribe more pages than `max_image_pages` (default
+10) in one call, the tool returns a `TextContent` note pointing back at
+`pdf_path` instead of attaching the full image batch — re-call with a
+narrower `page_indices` / `first_n` / `last_n`, or raise
+`max_image_pages` deliberately.
 
 ### 5. Clean Up
 

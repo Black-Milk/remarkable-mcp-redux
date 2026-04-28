@@ -188,12 +188,15 @@ class RenderResponse(_BaseResponse):
 
     Transport note: this model is the *structured* half of the MCP tool
     result. The render tools wrap it via
-    ``tools._artifacts.render_response_to_tool_result``, which additionally
-    attaches the rendered PDF as an MCP ``EmbeddedResource`` content block
-    so clients without host filesystem access can still consume the output.
-    ``pdf_path`` remains for in-process/local diagnostics but should be
-    treated as deprecated by remote MCP clients in favour of the embedded
-    artifact.
+    ``tools._artifacts.render_response_to_tool_result``, which by default
+    additionally attaches one PNG ``ImageContent`` block per rendered page
+    (rasterized from the merged PDF) so clients that filter
+    ``application/pdf`` ``EmbeddedResource`` blocks (notably Claude
+    Desktop) still see the page contents inline. ``pdf_path`` remains
+    populated for clients with host filesystem access (Cursor agent mode,
+    Desktop Commander); the PDF ``EmbeddedResource`` block is opt-in via
+    the tool's ``attach_pdf_resource`` flag for spec-compliant clients
+    that consume non-image resources.
     """
 
     pdf_path: str | None = None
