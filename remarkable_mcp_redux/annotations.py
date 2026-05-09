@@ -27,8 +27,12 @@ TITLES: dict[str, str] = {
     "remarkable_move_folder": "Move reMarkable folder",
     "remarkable_create_folder": "Create reMarkable folder",
     "remarkable_pin_document": "Pin or unpin reMarkable document",
+    "remarkable_update_document_tags": "Update reMarkable document tags",
+    "remarkable_update_document_tags_batch": "Update reMarkable document tags in batch",
+    "remarkable_set_document_authors": "Set reMarkable document authors",
     "remarkable_restore_metadata": "Restore reMarkable metadata from backup",
-    "remarkable_cleanup_metadata_backups": "Clean up reMarkable metadata backups",
+    "remarkable_restore_content": "Restore reMarkable content from backup",
+    "remarkable_cleanup_metadata_backups": "Clean up reMarkable backups",
 }
 
 # ToolAnnotations registry. Hint semantics (per MCP spec):
@@ -123,6 +127,28 @@ ANNOTATIONS: dict[str, ToolAnnotations] = {
         idempotentHint=False,
         openWorldHint=False,
     ),
+    # Tag/author tools mutate .content (with a paired .metadata sync bump).
+    # destructiveHint=True because each call overwrites the existing tag /
+    # author state and generates new timestamped backups; idempotentHint=False
+    # because backup filenames embed a timestamp that differs between calls.
+    "remarkable_update_document_tags": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    "remarkable_update_document_tags_batch": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+    "remarkable_set_document_authors": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
     # create_folder is additive (creates a new record); never overwrites
     # existing state, so destructiveHint=False. Not idempotent because each
     # call generates a new folder UUID.
@@ -140,8 +166,17 @@ ANNOTATIONS: dict[str, ToolAnnotations] = {
         idempotentHint=True,
         openWorldHint=False,
     ),
-    # cleanup_metadata_backups deletes .metadata.bak files; idempotent because
-    # repeating the same filter set removes nothing on the second call.
+    # restore_content is the .content sibling of restore_metadata; same
+    # destructive-but-idempotent semantics, scoped to .content.bak.* backups.
+    "remarkable_restore_content": ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+    # cleanup_metadata_backups deletes .metadata.bak.* AND .content.bak.*
+    # files; idempotent because repeating the same filter set removes nothing
+    # on the second call.
     "remarkable_cleanup_metadata_backups": ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,

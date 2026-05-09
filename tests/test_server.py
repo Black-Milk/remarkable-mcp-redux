@@ -32,7 +32,11 @@ EXPECTED_WRITE_TOOLS = [
     "remarkable_move_folder",
     "remarkable_create_folder",
     "remarkable_pin_document",
+    "remarkable_update_document_tags",
+    "remarkable_update_document_tags_batch",
+    "remarkable_set_document_authors",
     "remarkable_restore_metadata",
+    "remarkable_restore_content",
     "remarkable_cleanup_metadata_backups",
 ]
 

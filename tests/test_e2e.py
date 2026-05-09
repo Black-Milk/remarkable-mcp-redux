@@ -140,11 +140,15 @@ class TestE2EStdio:
                 "remarkable_move_folder",
                 "remarkable_create_folder",
                 "remarkable_pin_document",
+                "remarkable_update_document_tags",
+                "remarkable_update_document_tags_batch",
+                "remarkable_set_document_authors",
                 "remarkable_restore_metadata",
+                "remarkable_restore_content",
                 "remarkable_cleanup_metadata_backups",
             ):
                 assert name in tool_names, f"Missing write tool: {name}"
-            assert len(tool_names) == 17  # 7 read + 10 write (8 singular + 2 batch)
+            assert len(tool_names) == 21  # 7 read + 14 write (12 singular + 2 batch)
         finally:
             proc.terminate()
             proc.wait()

@@ -1,4 +1,4 @@
-"""Opt-in write-back MCP tools: rename, move, pin, create-folder, restore, backup cleanup.
+"""Opt-in write-back MCP tools: rename, move, pin, tag, set authors, create-folder, restore, backup cleanup.
 
 Each tool delegates to WritesFacade; only registered when REMARKABLE_ENABLE_WRITE_TOOLS is set.
 """
@@ -9,12 +9,15 @@ from ..annotations import ANNOTATIONS, TITLES
 from ..facades import WritesFacade
 from ..responses import (
     BatchRenameResponse,
+    BatchUpdateTagsResponse,
     CleanupBackupsResponse,
     CreateFolderResponse,
     MoveResponse,
     PinResponse,
     RenameResponse,
     RestoreResponse,
+    SetAuthorsResponse,
+    UpdateTagsResponse,
 )
 from ._boundary import tool_error_boundary
 
@@ -188,6 +191,83 @@ def register_write_tools(mcp: FastMCP, *, writes: WritesFacade) -> None:
         return writes.pin_document(doc_id, pinned, dry_run=dry_run)
 
     @mcp.tool(
+        title=TITLES["remarkable_update_document_tags"],
+        annotations=ANNOTATIONS["remarkable_update_document_tags"],
+        output_schema=UpdateTagsResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_update_document_tags(
+        doc_id: str,
+        tags: list[str] | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        dry_run: bool = False,
+    ):
+        """Update a reMarkable document's user-applied tags (DocumentType only;
+        folders are rejected). Two mutually-exclusive modes:
+          - replace: pass tags=[...] (use [] to clear all tags),
+          - incremental: pass add=[...] and/or remove=[...].
+        Matching is case-insensitive: adding "Foo" when "foo" exists is a no-op;
+        removing "Foo" when "foo" exists drops the existing entry. Replace mode
+        adopts the supplied case verbatim. Empty/whitespace-only entries and
+        overlap between add and remove are rejected. With dry_run=true, returns
+        the planned old_tags/new_tags/added/removed without writing. Otherwise
+        writes .content atomically with a timestamped backup, then bumps
+        .metadata so reMarkable sync notices. Pause reMarkable desktop sync
+        before invoking this tool."""
+        return writes.update_document_tags(
+            doc_id,
+            tags=tags,
+            add=add,
+            remove=remove,
+            dry_run=dry_run,
+        )
+
+    @mcp.tool(
+        title=TITLES["remarkable_update_document_tags_batch"],
+        annotations=ANNOTATIONS["remarkable_update_document_tags_batch"],
+        output_schema=BatchUpdateTagsResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_update_document_tags_batch(
+        items: list[dict],
+        dry_run: bool = False,
+    ):
+        """Update tags on many reMarkable documents in one call (continue-on-error).
+        ``items`` is a list of {"id": doc_id, "tags"?: [...], "add"?: [...],
+        "remove"?: [...]}. Each item follows the singular tool's modes
+        (replace via tags, or incremental via add/remove; mutually exclusive).
+        Per-item failures (not_found, kind_mismatch on a folder id, trashed,
+        validation) are embedded inline so callers see every outcome in one
+        response. Whole-request errors (empty list, duplicate ids, malformed
+        items) raise the standard ToolError envelope and write nothing. With
+        dry_run=true, validates every item and reports the plan without touching
+        disk. Pause reMarkable desktop sync before invoking this tool."""
+        return writes.update_document_tags_batch(items, dry_run=dry_run)
+
+    @mcp.tool(
+        title=TITLES["remarkable_set_document_authors"],
+        annotations=ANNOTATIONS["remarkable_set_document_authors"],
+        output_schema=SetAuthorsResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_set_document_authors(
+        doc_id: str,
+        authors: list[str],
+        dry_run: bool = False,
+    ):
+        """Replace a reMarkable document's authors (.content documentMetadata.authors).
+        Replace-only semantics: the supplied list (after stripping, dedupe, and
+        validation) becomes the new authors list. Pass [] to clear authors.
+        Sibling fields under documentMetadata (notably title) are preserved.
+        DocumentType only; folders are rejected. With dry_run=true, returns
+        the planned old_authors/new_authors without writing. Otherwise writes
+        .content atomically with a timestamped backup, then bumps .metadata so
+        reMarkable sync notices. Pause reMarkable desktop sync before invoking
+        this tool."""
+        return writes.set_document_authors(doc_id, authors, dry_run=dry_run)
+
+    @mcp.tool(
         title=TITLES["remarkable_restore_metadata"],
         annotations=ANNOTATIONS["remarkable_restore_metadata"],
         output_schema=RestoreResponse.model_json_schema(),
@@ -206,6 +286,25 @@ def register_write_tools(mcp: FastMCP, *, writes: WritesFacade) -> None:
         return writes.restore_metadata(doc_id, dry_run=dry_run)
 
     @mcp.tool(
+        title=TITLES["remarkable_restore_content"],
+        annotations=ANNOTATIONS["remarkable_restore_content"],
+        output_schema=RestoreResponse.model_json_schema(),
+    )
+    @tool_error_boundary
+    def remarkable_restore_content(
+        doc_id: str,
+        dry_run: bool = False,
+    ):
+        """Restore a document's .content from its most recent timestamped backup.
+        Acts as an undo lever after update_document_tags or set_document_authors.
+        The current live .content is itself backed up before being overwritten,
+        so the restore is reversible. With dry_run=true, reports which backup
+        file would be consumed without modifying anything. Errors cleanly if no
+        .content backup exists for this record. Pause reMarkable desktop sync
+        before invoking this tool."""
+        return writes.restore_content(doc_id, dry_run=dry_run)
+
+    @mcp.tool(
         title=TITLES["remarkable_cleanup_metadata_backups"],
         annotations=ANNOTATIONS["remarkable_cleanup_metadata_backups"],
         output_schema=CleanupBackupsResponse.model_json_schema(),
@@ -216,12 +315,14 @@ def register_write_tools(mcp: FastMCP, *, writes: WritesFacade) -> None:
         doc_id: str | None = None,
         dry_run: bool = False,
     ):
-        """Bulk-delete .metadata.bak.* files across the reMarkable cache.
+        """Bulk-delete .metadata.bak.* and .content.bak.* files across the cache.
         At least one filter is required: ``older_than_days`` (set to 0 to wipe
-        every backup) or ``doc_id`` (target a single record's backup chain).
-        With dry_run=true, reports files_removed/bytes_freed/backups_remaining
-        without unlinking anything. This complements the per-write auto-pruning
-        that already keeps each document's chain bounded."""
+        every backup) or ``doc_id`` (target a single record's backup chains
+        across both file types). With dry_run=true, reports
+        files_removed/bytes_freed/backups_remaining without unlinking anything.
+        ``scanned_docs`` counts unique doc IDs (not file extensions); a single
+        record with both .metadata and .content backups counts as one. This
+        complements the per-write auto-pruning that keeps each chain bounded."""
         return writes.cleanup_metadata_backups(
             older_than_days=older_than_days,
             doc_id=doc_id,

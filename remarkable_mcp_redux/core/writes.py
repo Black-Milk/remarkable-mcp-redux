@@ -138,6 +138,109 @@ class MetadataRestorer:
         return old_meta, restored_meta, pre_restore_backup, source
 
 
+class ContentWriter:
+    """Mutating helper for reMarkable .content files.
+
+    Same atomic temp-file + ``os.replace`` discipline as ``MetadataWriter``,
+    with timestamped ``.content.bak.<ts>`` siblings and retention pruning.
+    Unlike the metadata writer this does NOT touch ``lastModified`` /
+    ``metadatamodified`` / ``modified``: those flags live on ``.metadata``.
+    Callers who want reMarkable sync to notice the change should pair the
+    ``.content`` write with a ``MetadataWriter.update_metadata(doc_id, {})``
+    bump after this returns.
+    """
+
+    def __init__(self, base_path: Path):
+        self.base_path = Path(base_path)
+
+    def update_content(
+        self, doc_id: str, updates: dict
+    ) -> tuple[dict, dict, Path]:
+        """Update a .content file in place.
+
+        Reads the current JSON, shallow-merges ``updates`` over it (callers
+        patching nested dicts like ``documentMetadata`` are responsible for
+        preserving sibling fields), backs up the original to a timestamped
+        sibling, and atomically replaces the file. Returns
+        ``(old_content, new_content, backup_path)``.
+        """
+        content_path = self.base_path / f"{doc_id}.content"
+        if not content_path.exists():
+            raise FileNotFoundError(f"Content not found: {content_path}")
+
+        with open(content_path) as f:
+            current = json.load(f)
+
+        new_content = {**current, **updates}
+        backup_path = _backup(content_path)
+        try:
+            _atomic_write_json(content_path, new_content)
+        except Exception:
+            logger.exception(
+                "Atomic write failed for %s; original preserved at %s",
+                content_path,
+                backup_path,
+            )
+            raise
+        _prune_old_backups(content_path, retain=backup_retention_count())
+        return current, new_content, backup_path
+
+
+class ContentRestorer:
+    """Restore a .content file from its most recent timestamped backup.
+
+    Mirrors ``MetadataRestorer`` exactly — pre-restore safety copy of the
+    live content, atomic write of the backup contents, retention prune.
+    """
+
+    def __init__(self, base_path: Path):
+        self.base_path = Path(base_path)
+
+    def latest_backup(self, doc_id: str) -> Path | None:
+        """Return the most recent .content.bak.* sibling, or None if none exist."""
+        content_path = self.base_path / f"{doc_id}.content"
+        backups = sorted(
+            content_path.parent.glob(f"{content_path.name}{BACKUP_SUFFIX}*")
+        )
+        return backups[-1] if backups else None
+
+    def restore_latest(self, doc_id: str) -> tuple[dict, dict, Path, Path]:
+        """Restore .content from its most recent backup.
+
+        Returns ``(old_content, restored_content, pre_restore_backup,
+        source_backup)``. Raises ``FileNotFoundError`` if the live ``.content``
+        is missing or no backups exist for the given doc.
+        """
+        content_path = self.base_path / f"{doc_id}.content"
+        if not content_path.exists():
+            raise FileNotFoundError(f"Content not found: {content_path}")
+
+        source = self.latest_backup(doc_id)
+        if source is None:
+            raise FileNotFoundError(
+                f"No content backup files available for {doc_id}; "
+                "nothing to restore"
+            )
+
+        with open(content_path) as f:
+            old_content = json.load(f)
+        with open(source) as f:
+            restored_content = json.load(f)
+
+        pre_restore_backup = _backup(content_path)
+        try:
+            _atomic_write_json(content_path, restored_content)
+        except Exception:
+            logger.exception(
+                "Restore atomic write failed for %s; original preserved at %s",
+                content_path,
+                pre_restore_backup,
+            )
+            raise
+        _prune_old_backups(content_path, retain=backup_retention_count())
+        return old_content, restored_content, pre_restore_backup, source
+
+
 class MetadataCreator:
     """Create brand-new .metadata + .content records (currently folders only).
 
@@ -258,7 +361,7 @@ def cleanup_backups(
     older_than_days: int | None = None,
     doc_id: str | None = None,
 ) -> tuple[int, int, int, int]:
-    """Bulk-prune .metadata.bak.* files across the cache.
+    """Bulk-prune .metadata.bak.* and .content.bak.* files across the cache.
 
     Returns (files_removed, bytes_freed, scanned_docs, backups_remaining).
     Either filter may be supplied independently; callers are responsible for
@@ -266,8 +369,10 @@ def cleanup_backups(
 
     older_than_days: only remove backups older than this many days (computed
         from file mtime). None means no age filter.
-    doc_id: only scan the given document's backup chain. None means scan all
-        documents in base_path.
+    doc_id: only scan the given document's backup chains. None means scan
+        every document in base_path. ``scanned_docs`` counts unique doc IDs,
+        not file extensions, so ``.metadata`` and ``.content`` for the same
+        record contribute one to the scanned total.
     """
     base_path = Path(base_path)
     cutoff_ts: float | None = None
@@ -275,37 +380,42 @@ def cleanup_backups(
         cutoff_ts = datetime.now(UTC).timestamp() - older_than_days * 86400
 
     if doc_id is not None:
-        scan_paths = [base_path / f"{doc_id}.metadata"]
+        doc_ids = [doc_id]
+    elif base_path.exists():
+        doc_ids = sorted(
+            {p.stem for p in base_path.glob("*.metadata")}
+            | {p.stem for p in base_path.glob("*.content")}
+        )
     else:
-        scan_paths = sorted(base_path.glob("*.metadata"))
+        doc_ids = []
 
     files_removed = 0
     bytes_freed = 0
     backups_remaining = 0
     scanned = 0
-    for meta_path in scan_paths:
-        if not meta_path.parent.exists():
+    for did in doc_ids:
+        if not base_path.exists():
             continue
         scanned += 1
-        for backup in sorted(
-            meta_path.parent.glob(f"{meta_path.name}{BACKUP_SUFFIX}*")
-        ):
-            if cutoff_ts is not None:
-                try:
-                    if backup.stat().st_mtime >= cutoff_ts:
+        for ext in (".metadata", ".content"):
+            stub_name = f"{did}{ext}"
+            for backup in sorted(base_path.glob(f"{stub_name}{BACKUP_SUFFIX}*")):
+                if cutoff_ts is not None:
+                    try:
+                        if backup.stat().st_mtime >= cutoff_ts:
+                            backups_remaining += 1
+                            continue
+                    except OSError:
                         backups_remaining += 1
                         continue
+                try:
+                    size = backup.stat().st_size
+                    backup.unlink()
+                    files_removed += 1
+                    bytes_freed += size
                 except OSError:
+                    logger.exception("Failed to remove backup: %s", backup)
                     backups_remaining += 1
-                    continue
-            try:
-                size = backup.stat().st_size
-                backup.unlink()
-                files_removed += 1
-                bytes_freed += size
-            except OSError:
-                logger.exception("Failed to remove backup: %s", backup)
-                backups_remaining += 1
     return files_removed, bytes_freed, scanned, backups_remaining
 
 

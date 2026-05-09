@@ -302,6 +302,75 @@ class CleanupBackupsResponse(_BaseResponse):
     backups_remaining: int
 
 
+class UpdateTagsResponse(_BaseResponse):
+    """remarkable_update_document_tags result.
+
+    ``old_tags`` and ``new_tags`` are full snapshots of the user-applied tag
+    list before/after the op. ``added`` and ``removed`` are the per-call
+    deltas (case-insensitive matching). On dry_run only the diff fields are
+    populated; on a real write the two ``backup_path`` fields carry the
+    .content and .metadata backup locations respectively.
+    """
+
+    doc_id: str
+    dry_run: bool
+    old_tags: list[str]
+    new_tags: list[str]
+    added: list[str]
+    removed: list[str]
+    content_backup_path: str | None = None
+    metadata_backup_path: str | None = None
+
+
+class SetAuthorsResponse(_BaseResponse):
+    """remarkable_set_document_authors result.
+
+    Replace-only semantics: ``new_authors`` is the canonicalized list the
+    caller supplied (stripped, deduped case-insensitive, order preserved).
+    """
+
+    doc_id: str
+    dry_run: bool
+    old_authors: list[str]
+    new_authors: list[str]
+    content_backup_path: str | None = None
+    metadata_backup_path: str | None = None
+
+
+class BatchUpdateTagsItem(_BaseResponse):
+    """One row in BatchUpdateTagsResponse.results.
+
+    Successful rows populate the diff and backup fields; failed rows
+    populate ``error``/``code`` instead. Sparse-by-default ``model_dump``
+    drops the unused half from the wire.
+    """
+
+    id: str
+    success: bool
+    old_tags: list[str] | None = None
+    new_tags: list[str] | None = None
+    added: list[str] | None = None
+    removed: list[str] | None = None
+    content_backup_path: str | None = None
+    metadata_backup_path: str | None = None
+    error: str | None = None
+    code: str | None = None
+
+
+class BatchUpdateTagsResponse(_BaseResponse):
+    """remarkable_update_document_tags_batch result.
+
+    ``results`` is index-aligned with the input ``items`` list; per-item
+    failures are embedded inline rather than aborting the batch
+    (continue-on-error). ``succeeded``/``failed`` are aggregate counts.
+    """
+
+    dry_run: bool
+    results: list[BatchUpdateTagsItem]
+    succeeded: int
+    failed: int
+
+
 class BatchRenameItem(_BaseResponse):
     """One row in BatchRenameResponse.results.
 
@@ -366,6 +435,8 @@ class ToolError(_BaseResponse):
 __all__ = [
     "BatchRenameItem",
     "BatchRenameResponse",
+    "BatchUpdateTagsItem",
+    "BatchUpdateTagsResponse",
     "CleanupBackupsResponse",
     "CleanupResponse",
     "CreateFolderResponse",
@@ -380,6 +451,8 @@ __all__ = [
     "RenameResponse",
     "RenderResponse",
     "RestoreResponse",
+    "SetAuthorsResponse",
     "StatusResponse",
     "ToolError",
+    "UpdateTagsResponse",
 ]

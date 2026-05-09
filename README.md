@@ -11,9 +11,9 @@ An MCP server that gives Claude direct access to your reMarkable tablet's notebo
 - **Folder listing** — `remarkable_list_folders` exposes `CollectionType` records; `remarkable_list_documents` now correctly excludes them.
 - **Filtering** — `remarkable_list_documents` accepts `file_type` and `tag` query parameters.
 - **Robust render error handling** — non-zero `rmc` exit codes surface as per-page failures in the response rather than being swallowed.
-- **Opt-in write-back tools** — eight write tools covering rename, move, pin, restore, create-folder, rename-folder, move-folder, and bulk backup cleanup. All are guarded behind `REMARKABLE_ENABLE_WRITE_TOOLS=true` and ship with `dry_run`, atomic writes, automatic sync-flag stamping, and per-document timestamped backups.
+- **Opt-in write-back tools** — twelve singular write tools (rename, move, pin, tag, set authors, create-folder, restore-metadata, restore-content, bulk backup cleanup) plus two batch tools (rename-batch, tag-batch). All are guarded behind `REMARKABLE_ENABLE_WRITE_TOOLS=true` and ship with `dry_run`, atomic writes, automatic sync-flag stamping, and per-document timestamped backups (`.metadata.bak.*` for metadata edits, `.content.bak.*` for tag and author edits).
 - **Sync-aware writes** — every write sets `metadatamodified=True` and `modified=True` so the reMarkable desktop sync engine recognises local edits; folder operations enforce cycle-safety via a parent-chain check, and trashed records are refused with explicit errors.
-- **Auto-pruned backups** — each document's `.metadata.bak.`* chain is bounded after every write (default keep last 5, configurable via `REMARKABLE_BACKUP_RETENTION_COUNT`); a bulk `remarkable_cleanup_metadata_backups` tool also offers age- and document-scoped sweeps.
+- **Auto-pruned backups** — each document's `.metadata.bak.*` and `.content.bak.*` chains are bounded after every write (default keep last 5, configurable via `REMARKABLE_BACKUP_RETENTION_COUNT`); a bulk `remarkable_cleanup_metadata_backups` tool also offers age- and document-scoped sweeps across both backup families.
 - **Expanded test suite** — 130+ tests across unit, integration, and e2e layers using entirely synthetic fixtures.
 
 ## How it works
@@ -283,16 +283,22 @@ Document responses are enriched from `.content` with `file_type`, `document_titl
 ### Write-back tools (opt-in)
 
 
-| Tool                                  | Description                                                                    |
-| ------------------------------------- | ------------------------------------------------------------------------------ |
-| `remarkable_rename_document`          | Update a document's `visibleName`                                              |
-| `remarkable_rename_folder`            | Update a folder's `visibleName` (sibling-uniqueness enforced)                  |
-| `remarkable_move_document`            | Move a document to a different folder (or root)                                |
-| `remarkable_move_folder`              | Move a folder to a different parent; response includes `descendants_affected`  |
-| `remarkable_create_folder`            | Create a new folder under any existing folder (or root); two-file atomic write |
-| `remarkable_pin_document`             | Set or clear a document's `pinned` flag                                        |
-| `remarkable_restore_metadata`         | Restore a record's `.metadata` from its most recent timestamped backup (undo)  |
-| `remarkable_cleanup_metadata_backups` | Bulk-delete `.metadata.bak.*` files by age or document id                      |
+| Tool                                     | Description                                                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `remarkable_rename_document`             | Update a document's `visibleName`                                                                            |
+| `remarkable_rename_folder`               | Update a folder's `visibleName` (sibling-uniqueness enforced)                                                |
+| `remarkable_rename_documents_batch`      | Rename N documents in one call (continue-on-error)                                                           |
+| `remarkable_rename_folders_batch`        | Rename N folders in one call (continue-on-error, in-batch sibling-uniqueness)                                |
+| `remarkable_move_document`               | Move a document to a different folder (or root)                                                              |
+| `remarkable_move_folder`                 | Move a folder to a different parent; response includes `descendants_affected`                                |
+| `remarkable_create_folder`               | Create a new folder under any existing folder (or root); two-file atomic write                               |
+| `remarkable_pin_document`                | Set or clear a document's `pinned` flag                                                                      |
+| `remarkable_update_document_tags`        | Update a document's tags via replace mode (`tags=`) or incremental mode (`add=`/`remove=`)                   |
+| `remarkable_update_document_tags_batch`  | Update tags on N documents in one call (continue-on-error)                                                   |
+| `remarkable_set_document_authors`        | Replace a document's `documentMetadata.authors` list (preserves sibling fields like `title`)                 |
+| `remarkable_restore_metadata`            | Restore a record's `.metadata` from its most recent timestamped backup (undo for rename/move/pin)            |
+| `remarkable_restore_content`             | Restore a document's `.content` from its most recent timestamped backup (undo for tag/author edits)          |
+| `remarkable_cleanup_metadata_backups`    | Bulk-delete `.metadata.bak.*` and `.content.bak.*` files by age or document id                               |
 
 
 These tools mutate the local cache and are **disabled by default**. Enable them by
@@ -303,13 +309,20 @@ Safety guarantees:
 - Every tool accepts `dry_run=true` to preview without writing.
 - Every successful write sets `metadatamodified=True` and `modified=True` on the
 affected `.metadata` so the reMarkable sync engine recognises the edit.
-- Every successful write creates a timestamped `<doc_id>.metadata.bak.<UTC>`
-backup before mutation. Use `remarkable_restore_metadata` as the undo lever -
-it creates a pre-restore backup of the live state first, so the restore itself
-is reversible.
+- Every successful write creates a timestamped backup before mutation:
+`.metadata` writes (rename/move/pin) produce `<doc_id>.metadata.bak.<UTC>`;
+`.content` writes (tag/author updates) produce `<doc_id>.content.bak.<UTC>`.
+Use `remarkable_restore_metadata` and `remarkable_restore_content` as the
+undo levers — each creates a pre-restore backup of the live state first, so
+the restore itself is reversible.
+- Tag and author edits write `.content` first, then bump `.metadata` with a
+no-op merge so reMarkable sync notices the change. The two writes are not
+atomic across files; if the trailing `.metadata` bump fails the `.content`
+backup is preserved so callers can roll back via `remarkable_restore_content`.
 - Per-document backup chains are auto-pruned after every write to keep the most
 recent N (default 5; override with `REMARKABLE_BACKUP_RETENTION_COUNT`).
-`remarkable_cleanup_metadata_backups` covers ad-hoc cleanup across the cache.
+`remarkable_cleanup_metadata_backups` covers ad-hoc cleanup across the cache
+and reaps both `.metadata.bak.*` and `.content.bak.*` chains.
 - Writes go through a same-directory temp file plus `os.replace`, so a crash
 mid-write cannot leave the cache in a half-written state. Folder creation
 uses a two-file atomic write (`.content` then `.metadata`) and rolls back the
@@ -334,10 +347,13 @@ busy" flag this server can poll, so the safest workflow is: pause sync,
 invoke write tools, verify on disk, resume sync. Each write sets
 `metadatamodified=True` and `modified=True` automatically, which is what the
 desktop app uses to flag a record as "changed locally, push on next sync".
-- **Undo path.** Every write creates a timestamped backup. `remarkable_restore_metadata`
-rolls a single record back to its previous state. The restore itself creates
-a pre-restore safety backup, so re-restoring re-applies the change you just
-undid - useful for A/B testing renames or moves.
+- **Undo path.** Every write creates a timestamped backup.
+`remarkable_restore_metadata` rolls a single record's `.metadata` back to its
+previous state (undoing rename/move/pin); `remarkable_restore_content` does
+the same for `.content` (undoing tag/author edits). The restore itself
+creates a pre-restore safety backup, so re-restoring re-applies the change
+you just undid - useful for A/B testing renames, tag changes, or author
+edits.
 - **Backup retention.** Per-document chains are auto-pruned after every write.
 Default is "keep the last 5"; set `REMARKABLE_BACKUP_RETENTION_COUNT=N`
 (`0` = "keep none beyond the one made for this write"). Bulk cleanup is
@@ -452,15 +468,16 @@ remarkable-mcp-redux/
 │   ├── server.py                     # FastMCP entry point + build_server()
 │   ├── config.py                     # Default paths, env-flag helpers, Cairo setup
 │   ├── schemas.py                    # Pydantic models for .metadata and .content JSON
-│   ├── annotations.py                # Registry: title + ToolAnnotations for all 15 tools
+│   ├── annotations.py                # Registry: title + ToolAnnotations for all 21 tools
 │   ├── responses.py                  # Pydantic response models + sparse-by-default _BaseResponse
 │   ├── exceptions.py                 # Typed RemarkableError hierarchy raised by facades
 │   ├── core/                         # Low-level mechanisms (no MCP awareness)
 │   │   ├── cache.py                  # Read-only cache loader (parses JSON via schemas)
 │   │   │                             #   + is_descendant_of / count_descendants
 │   │   ├── render.py                 # Rendering pipeline + dispatcher + typed RenderError hierarchy
-│   │   ├── writes.py                 # Atomic, backup-protected metadata mutations
+│   │   ├── writes.py                 # Atomic, backup-protected .metadata + .content mutations
 │   │   │                             #   MetadataWriter / MetadataRestorer / MetadataCreator
+│   │   │                             #   ContentWriter / ContentRestorer
 │   │   │                             #   + cleanup_backups bulk pruning helper
 │   │   ├── page_sources.py           # Typed PageSource union (rm_v6, rm_v5, pdf_passthrough, missing)
 │   │   ├── rm_format.py              # .rm header version probe (returns 5 / 6 / None)
@@ -470,14 +487,14 @@ remarkable-mcp-redux/
 │   │   ├── folders.py                # FoldersFacade — list with parent/listing validation
 │   │   ├── render.py                 # RenderFacade — render_pages / render_document / cleanup
 │   │   ├── status.py                 # StatusFacade — diagnostics
-│   │   ├── writes.py                 # WritesFacade — rename/move/pin/restore/create-folder/cleanup
+│   │   ├── writes.py                 # WritesFacade — rename/move/pin/tag/authors/restore/create-folder/cleanup
 │   │   └── _helpers.py               # Shared validation + dry-run + write-execution helpers
 │   └── tools/                        # MCP tool surface (thin wrappers over facades)
 │       ├── __init__.py               # register_tools(): wires read/render/write registrations
 │       ├── _boundary.py              # @tool_error_boundary — RemarkableError → ToolError envelope
 │       ├── read.py                   # 4 read tools (status, list_documents, list_folders, get_info)
 │       ├── render.py                 # 3 render tools (render_pages, render_document, cleanup_renders)
-│       └── write.py                  # 8 opt-in write tools, gated on REMARKABLE_ENABLE_WRITE_TOOLS
+│       └── write.py                  # 14 opt-in write tools, gated on REMARKABLE_ENABLE_WRITE_TOOLS
 ├── skills/
 │   ├── remarkable-transcribe.md      # Handwriting → Markdown skill
 │   └── remarkable-diagram.md         # Diagram → Excalidraw skill

@@ -1033,3 +1033,510 @@ class TestFolderMove:
             (nested_folder_cache / f"{NESTED_FOLDER_D}.metadata").read_text()
         )
         assert on_disk["parent"] == ""
+
+
+# ---------------------------------------------------------------------------
+# writes.update_document_tags (singular)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDocumentTags:
+    @pytest.mark.unit
+    def test_replace_mode_writes_new_tag_list(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", tags=["Fresh"]
+        )
+        assert result.get("error") is not True
+        assert result["dry_run"] is False
+        assert result["old_tags"] == ["Reference", "Architecture"]
+        assert result["new_tags"] == ["Fresh"]
+        assert sorted(result["added"]) == ["Fresh"]
+        assert sorted(result["removed"]) == ["Architecture", "Reference"]
+        content = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert [t["name"] for t in content["tags"]] == ["Fresh"]
+
+    @pytest.mark.unit
+    def test_replace_with_empty_clears_tags(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", tags=[]
+        )
+        assert result["new_tags"] == []
+        assert sorted(result["removed"]) == ["Architecture", "Reference"]
+        content = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert content["tags"] == []
+
+    @pytest.mark.unit
+    def test_add_mode_appends(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", add=["Important"]
+        )
+        assert result["new_tags"] == ["Journal", "Important"]
+        assert result["added"] == ["Important"]
+        assert result["removed"] == []
+
+    @pytest.mark.unit
+    def test_remove_mode_drops(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", remove=["Reference"]
+        )
+        assert result["new_tags"] == ["Architecture"]
+        assert result["removed"] == ["Reference"]
+        assert result["added"] == []
+
+    @pytest.mark.unit
+    def test_add_and_remove_combined(self, fake_cache):
+        """Swap one tag for another in a single call."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "bbbb-4444-5555-6666",
+            add=["Diagrams"],
+            remove=["Architecture"],
+        )
+        assert "Diagrams" in result["new_tags"]
+        assert "Architecture" not in result["new_tags"]
+        assert result["added"] == ["Diagrams"]
+        assert result["removed"] == ["Architecture"]
+
+    @pytest.mark.unit
+    def test_add_existing_tag_is_noop(self, fake_cache):
+        """Adding a tag that already exists (case-insensitive) is a no-op."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", add=["journal"]
+        )
+        assert result["added"] == []
+        assert result["new_tags"] == ["Journal"]
+
+    @pytest.mark.unit
+    def test_remove_case_insensitive(self, fake_cache):
+        """Removing "JOURNAL" still drops the existing "Journal" entry."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", remove=["JOURNAL"]
+        )
+        assert result["new_tags"] == []
+        assert result["removed"] == ["Journal"]
+
+    @pytest.mark.unit
+    def test_dedupes_user_input(self, fake_cache):
+        """Repeated entries in the user's list collapse to the first occurrence."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "cccc-7777-8888-9999", tags=["Foo", "FOO", "Bar"]
+        )
+        assert result["new_tags"] == ["Foo", "Bar"]
+
+    @pytest.mark.unit
+    def test_rejects_no_op_call(self, fake_cache):
+        """Passing none of tags/add/remove is a malformed request."""
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)at least one"):
+            client.writes.update_document_tags("aaaa-1111-2222-3333")
+
+    @pytest.mark.unit
+    def test_rejects_mixing_replace_and_incremental(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)mutually exclusive"):
+            client.writes.update_document_tags(
+                "aaaa-1111-2222-3333", tags=["A"], add=["B"]
+            )
+
+    @pytest.mark.unit
+    def test_rejects_empty_tag(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)empty|whitespace"):
+            client.writes.update_document_tags(
+                "aaaa-1111-2222-3333", add=["   "]
+            )
+
+    @pytest.mark.unit
+    def test_rejects_add_remove_overlap(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)both"):
+            client.writes.update_document_tags(
+                "aaaa-1111-2222-3333", add=["Foo"], remove=["foo"]
+            )
+
+    @pytest.mark.unit
+    def test_rejects_collection_type(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(KindMismatchError, match="(?i)folder"):
+            client.writes.update_document_tags(WORK_FOLDER_ID, tags=["X"])
+
+    @pytest.mark.unit
+    def test_rejects_trashed_document(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(TrashedRecordError, match="(?i)trash"):
+            client.writes.update_document_tags(TRASHED_DOC_ID, tags=["X"])
+
+    @pytest.mark.unit
+    def test_rejects_missing_document(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(NotFoundError, match="(?i)not found"):
+            client.writes.update_document_tags("does-not-exist", tags=["X"])
+
+    @pytest.mark.unit
+    def test_dry_run_does_not_touch_disk(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", add=["Important"], dry_run=True
+        )
+        assert result["dry_run"] is True
+        assert "content_backup_path" not in result
+        assert "metadata_backup_path" not in result
+        content = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.content").read_text()
+        )
+        assert [t["name"] for t in content["tags"]] == ["Journal"]
+        assert list(fake_cache.glob("aaaa-1111-2222-3333.content.bak.*")) == []
+        assert list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*")) == []
+
+    @pytest.mark.unit
+    def test_creates_content_and_metadata_backups(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", add=["Important"]
+        )
+        content_backup = Path(result["content_backup_path"])
+        metadata_backup = Path(result["metadata_backup_path"])
+        assert content_backup.exists()
+        assert metadata_backup.exists()
+        assert content_backup.name.startswith("aaaa-1111-2222-3333.content.bak.")
+        assert metadata_backup.name.startswith("aaaa-1111-2222-3333.metadata.bak.")
+
+    @pytest.mark.unit
+    def test_metadata_sync_flags_refresh(self, fake_cache):
+        """Successful tag write must bump lastModified + sync flags on .metadata."""
+        client = RemarkableClient(base_path=fake_cache)
+        before = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        client.writes.update_document_tags(
+            "aaaa-1111-2222-3333", add=["Important"]
+        )
+        after = json.loads(
+            (fake_cache / "aaaa-1111-2222-3333.metadata").read_text()
+        )
+        assert int(after["lastModified"]) > int(before["lastModified"])
+        assert after["metadatamodified"] is True
+        assert after["modified"] is True
+
+    @pytest.mark.unit
+    def test_preserves_existing_timestamps_on_surviving_tags(self, fake_cache):
+        """Surviving tags keep their existing timestamp; new tags get 0."""
+        # Manually craft a richer existing tag with a non-zero timestamp.
+        content_path = fake_cache / "bbbb-4444-5555-6666.content"
+        content = json.loads(content_path.read_text())
+        content["tags"] = [
+            {"name": "Reference", "timestamp": 12345},
+            {"name": "Architecture", "timestamp": 67890},
+        ]
+        content_path.write_text(json.dumps(content))
+
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", add=["Diagrams"], remove=["Architecture"]
+        )
+        new_content = json.loads(content_path.read_text())
+        by_name = {t["name"]: t for t in new_content["tags"]}
+        assert by_name["Reference"]["timestamp"] == 12345
+        assert by_name["Diagrams"]["timestamp"] == 0
+
+
+# ---------------------------------------------------------------------------
+# writes.update_document_tags_batch
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDocumentTagsBatch:
+    @pytest.mark.unit
+    def test_mixed_success_and_failure(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "add": ["Pinned"]},
+            {"id": WORK_FOLDER_ID, "add": ["X"]},  # folder, kind_mismatch
+            {"id": TRASHED_DOC_ID, "add": ["X"]},  # trashed
+            {"id": "does-not-exist", "add": ["X"]},  # not_found
+        ]
+        result = client.writes.update_document_tags_batch(items)
+        assert result["dry_run"] is False
+        assert result["succeeded"] == 1
+        assert result["failed"] == 3
+        assert result["results"][0].success is True
+        assert result["results"][1].code == "kind_mismatch"
+        assert result["results"][2].code == "trashed"
+        assert result["results"][3].code == "not_found"
+
+    @pytest.mark.unit
+    def test_dry_run_writes_nothing(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        items = [{"id": "aaaa-1111-2222-3333", "add": ["Pinned"]}]
+        result = client.writes.update_document_tags_batch(items, dry_run=True)
+        assert result["dry_run"] is True
+        assert result["succeeded"] == 1
+        assert list(fake_cache.glob("aaaa-1111-2222-3333.content.bak.*")) == []
+
+    @pytest.mark.unit
+    def test_per_item_validation_failure_does_not_abort(self, fake_cache):
+        """Validation errors on one item show up as failed rows, not raises."""
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "add": ["GoodTag"]},
+            {"id": "bbbb-4444-5555-6666", "add": ["   "]},  # validation
+        ]
+        result = client.writes.update_document_tags_batch(items)
+        assert result["succeeded"] == 1
+        assert result["results"][1].success is False
+        assert result["results"][1].code == "validation"
+
+    @pytest.mark.unit
+    def test_rejects_empty_list(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)non-empty"):
+            client.writes.update_document_tags_batch([])
+
+    @pytest.mark.unit
+    def test_rejects_duplicate_ids(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        items = [
+            {"id": "aaaa-1111-2222-3333", "add": ["A"]},
+            {"id": "aaaa-1111-2222-3333", "add": ["B"]},
+        ]
+        with pytest.raises(ValidationError, match="(?i)duplicate"):
+            client.writes.update_document_tags_batch(items)
+
+    @pytest.mark.unit
+    def test_rejects_malformed_item(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)id"):
+            client.writes.update_document_tags_batch([{"add": ["X"]}])
+
+
+# ---------------------------------------------------------------------------
+# writes.set_document_authors
+# ---------------------------------------------------------------------------
+
+
+class TestSetDocumentAuthors:
+    @pytest.mark.unit
+    def test_replaces_authors(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.set_document_authors(
+            "bbbb-4444-5555-6666", ["Neal Ford", "Mark Richards"]
+        )
+        assert result.get("error") is not True
+        assert result["old_authors"] == ["Mark Richards"]
+        assert result["new_authors"] == ["Neal Ford", "Mark Richards"]
+        content = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert content["documentMetadata"]["authors"] == [
+            "Neal Ford",
+            "Mark Richards",
+        ]
+        assert content["documentMetadata"]["title"] == "Software Architecture Patterns"
+
+    @pytest.mark.unit
+    def test_clearing_authors_removes_field(self, fake_cache):
+        """Empty list clears authors and drops the documentMetadata.authors key."""
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.set_document_authors("bbbb-4444-5555-6666", [])
+        assert result["new_authors"] == []
+        content = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert "authors" not in content["documentMetadata"]
+        assert content["documentMetadata"]["title"] == "Software Architecture Patterns"
+
+    @pytest.mark.unit
+    def test_dedupes_input(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.set_document_authors(
+            "cccc-7777-8888-9999", ["Alice", "alice", "Bob"]
+        )
+        assert result["new_authors"] == ["Alice", "Bob"]
+
+    @pytest.mark.unit
+    def test_rejects_empty_string_entry(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)empty|whitespace"):
+            client.writes.set_document_authors(
+                "cccc-7777-8888-9999", ["Alice", "   "]
+            )
+
+    @pytest.mark.unit
+    def test_rejects_non_string_entry(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(ValidationError, match="(?i)string"):
+            client.writes.set_document_authors(
+                "cccc-7777-8888-9999", ["Alice", 42]
+            )
+
+    @pytest.mark.unit
+    def test_rejects_collection_type(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(KindMismatchError, match="(?i)folder"):
+            client.writes.set_document_authors(WORK_FOLDER_ID, ["Alice"])
+
+    @pytest.mark.unit
+    def test_rejects_trashed(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(TrashedRecordError, match="(?i)trash"):
+            client.writes.set_document_authors(TRASHED_DOC_ID, ["Alice"])
+
+    @pytest.mark.unit
+    def test_dry_run_does_not_touch_disk(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        result = client.writes.set_document_authors(
+            "bbbb-4444-5555-6666", ["Brand New"], dry_run=True
+        )
+        assert result["dry_run"] is True
+        content = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert content["documentMetadata"]["authors"] == ["Mark Richards"]
+
+
+# ---------------------------------------------------------------------------
+# writes.restore_content
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreContent:
+    @pytest.mark.unit
+    def test_round_trip_restore(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        original = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", tags=["Replaced"]
+        )
+        result = client.writes.restore_content("bbbb-4444-5555-6666")
+        assert result.get("error") is not True
+        restored = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert restored["tags"] == original["tags"]
+
+    @pytest.mark.unit
+    def test_creates_pre_restore_backup(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", tags=["Replaced"]
+        )
+        result = client.writes.restore_content("bbbb-4444-5555-6666")
+        assert Path(result["pre_restore_backup"]).exists()
+        assert Path(result["restored_from"]).exists()
+
+    @pytest.mark.unit
+    def test_no_backups_raises_backup_missing(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(BackupMissingError, match="(?i)backup"):
+            client.writes.restore_content("aaaa-1111-2222-3333")
+
+    @pytest.mark.unit
+    def test_missing_content_raises_not_found(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        with pytest.raises(NotFoundError, match="(?i)content|not found"):
+            client.writes.restore_content("nonexistent-doc")
+
+    @pytest.mark.unit
+    def test_dry_run_reports_source(self, fake_cache):
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", tags=["Replaced"]
+        )
+        result = client.writes.restore_content(
+            "bbbb-4444-5555-6666", dry_run=True
+        )
+        assert result["dry_run"] is True
+        assert "would_restore_from" in result
+        on_disk = json.loads(
+            (fake_cache / "bbbb-4444-5555-6666.content").read_text()
+        )
+        assert [t["name"] for t in on_disk["tags"]] == ["Replaced"]
+
+
+# ---------------------------------------------------------------------------
+# writes.cleanup_metadata_backups - .content.bak.* extension
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupBackupsContentExtension:
+    @pytest.mark.unit
+    def test_reaps_content_backups_alongside_metadata(
+        self, fake_cache, monkeypatch
+    ):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.rename_document("aaaa-1111-2222-3333", "Renamed")
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", add=["Important"]
+        )
+        result = client.writes.cleanup_metadata_backups(older_than_days=0)
+        # Tag write created both a .content.bak and a .metadata.bak; rename
+        # added one more .metadata.bak. Total of 3 files removed.
+        assert result["files_removed"] >= 3
+        assert list(fake_cache.glob("*.metadata.bak.*")) == []
+        assert list(fake_cache.glob("*.content.bak.*")) == []
+
+    @pytest.mark.unit
+    def test_doc_id_filter_targets_both_chains(self, fake_cache, monkeypatch):
+        """doc_id filter scans both .metadata and .content backup chains."""
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", add=["Important"]
+        )
+        client.writes.rename_document("aaaa-1111-2222-3333", "Renamed")
+        result = client.writes.cleanup_metadata_backups(
+            doc_id="bbbb-4444-5555-6666"
+        )
+        assert result["files_removed"] == 2  # one .metadata + one .content
+        # The other doc's .metadata backup must not be touched.
+        assert (
+            len(list(fake_cache.glob("aaaa-1111-2222-3333.metadata.bak.*"))) == 1
+        )
+
+    @pytest.mark.unit
+    def test_dry_run_counts_content_backups(self, fake_cache, monkeypatch):
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", add=["Important"]
+        )
+        result = client.writes.cleanup_metadata_backups(
+            older_than_days=0, dry_run=True
+        )
+        # Tag write created exactly one .content.bak and one .metadata.bak.
+        assert result["files_removed"] == 2
+        assert (
+            len(list(fake_cache.glob("bbbb-4444-5555-6666.content.bak.*"))) == 1
+        )
+        assert (
+            len(list(fake_cache.glob("bbbb-4444-5555-6666.metadata.bak.*"))) == 1
+        )
+
+    @pytest.mark.unit
+    def test_scanned_docs_counts_unique_ids_not_extensions(
+        self, fake_cache, monkeypatch
+    ):
+        """A doc with both .metadata and .content backups counts as 1 scanned."""
+        monkeypatch.setenv(BACKUP_RETENTION_ENV_VAR, "100")
+        client = RemarkableClient(base_path=fake_cache)
+        client.writes.update_document_tags(
+            "bbbb-4444-5555-6666", add=["Important"]
+        )
+        result = client.writes.cleanup_metadata_backups(
+            doc_id="bbbb-4444-5555-6666", dry_run=True
+        )
+        assert result["scanned_docs"] == 1

@@ -3,7 +3,7 @@
 ## What this is
 
 MCP server for reMarkable tablet document rendering and (opt-in) metadata
-mutation. Python 3.13+, managed with `uv`, exposes 15 tools over FastMCP stdio.
+mutation. Python 3.13+, managed with `uv`, exposes 21 tools over FastMCP stdio.
 
 ## Architecture
 
@@ -77,7 +77,7 @@ mode — always real data/APIs. Per-domain test files mirror the facade layout:
 
 - `client.py` — composition root (cache + renderer + facades)
 - `server.py` — FastMCP entry point + `build_server()`
-- `annotations.py` — registry of `title` + `ToolAnnotations` for all 15 tools
+- `annotations.py` — registry of `title` + `ToolAnnotations` for all 21 tools
 - `responses.py` — Pydantic response models + `_BaseResponse` (sparse `model_dump`)
 - `exceptions.py` — typed `RemarkableError` hierarchy
 - `tools/_boundary.py` — `@tool_error_boundary` decorator

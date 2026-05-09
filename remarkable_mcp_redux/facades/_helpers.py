@@ -311,6 +311,153 @@ def apply_rename_batch(
     return results
 
 
+def _validate_tag_op(
+    tags: list[str] | None,
+    add: list[str] | None,
+    remove: list[str] | None,
+) -> tuple[list[str] | None, list[str], list[str]]:
+    """Validate and canonicalize a tag-update operation.
+
+    Returns ``(replace_or_None, add_list, remove_list)`` with each list
+    stripped, deduplicated case-insensitively (first occurrence wins), and
+    free of empty/whitespace-only entries.
+
+    Raises ``ValidationError`` if:
+      - all three inputs are ``None`` (no-op call),
+      - ``tags`` is mixed with ``add``/``remove`` (modes are exclusive),
+      - any list element is not a string or is empty/whitespace-only,
+      - the same tag appears in both ``add`` and ``remove`` (case-insensitive).
+
+    Note: ``tags=[]`` is a valid replace-mode call meaning "clear all tags".
+    """
+    if tags is None and add is None and remove is None:
+        raise ValidationError(
+            "tag update requires at least one of tags, add, or remove"
+        )
+    if tags is not None and (add is not None or remove is not None):
+        raise ValidationError(
+            "tag update modes are mutually exclusive: pass either tags "
+            "(replace mode) or add/remove (incremental mode), not both"
+        )
+
+    canonical_tags = (
+        _canonicalize_tag_list(tags, "tags") if tags is not None else None
+    )
+    canonical_add = _canonicalize_tag_list(add, "add") if add is not None else []
+    canonical_remove = (
+        _canonicalize_tag_list(remove, "remove") if remove is not None else []
+    )
+
+    if canonical_add and canonical_remove:
+        add_lower = {t.lower() for t in canonical_add}
+        overlap = [t for t in canonical_remove if t.lower() in add_lower]
+        if overlap:
+            raise ValidationError(
+                f"tag(s) appear in both add and remove: {overlap}; "
+                "each tag may belong to one set only"
+            )
+
+    return canonical_tags, canonical_add, canonical_remove
+
+
+def _canonicalize_tag_list(values: object, param_name: str) -> list[str]:
+    """Strip, dedupe (case-insensitive), and validate a tag input list.
+
+    Empty input lists are allowed (e.g. ``tags=[]`` clears all tags); empty
+    or whitespace-only individual entries are rejected via ``ValidationError``.
+    """
+    if not isinstance(values, list):
+        raise ValidationError(f"{param_name} must be a list of strings")
+    canonical: list[str] = []
+    seen_lower: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            raise ValidationError(
+                f"{param_name} entries must be strings; "
+                f"got {type(raw).__name__}"
+            )
+        stripped = raw.strip()
+        if not stripped:
+            raise ValidationError(
+                f"{param_name} contains an empty or whitespace-only tag"
+            )
+        lower = stripped.lower()
+        if lower in seen_lower:
+            continue
+        seen_lower.add(lower)
+        canonical.append(stripped)
+    return canonical
+
+
+def _apply_tag_op(
+    current_names: list[str],
+    replace: list[str] | None,
+    add: list[str],
+    remove: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """Compute the post-op tag list plus per-call ``added``/``removed`` deltas.
+
+    Matching is case-insensitive: adding ``"Foo"`` when ``"foo"`` is already
+    present is a no-op (the existing entry's case is preserved); removing
+    ``"Foo"`` when ``"foo"`` is present drops the ``"foo"`` entry. Replace
+    mode adopts the user-supplied case verbatim.
+
+    Returns ``(new_names, added_delta, removed_delta)``. All three preserve
+    insertion order so the wire shape is deterministic.
+    """
+    if replace is not None:
+        current_lower = {n.lower() for n in current_names}
+        new_names = list(replace)
+        new_lower = {n.lower() for n in new_names}
+        added = [n for n in new_names if n.lower() not in current_lower]
+        removed = [n for n in current_names if n.lower() not in new_lower]
+        return new_names, added, removed
+
+    remove_lower = {t.lower() for t in remove}
+    new_names = [n for n in current_names if n.lower() not in remove_lower]
+    removed = [n for n in current_names if n.lower() in remove_lower]
+
+    surviving_lower = {n.lower() for n in new_names}
+    added: list[str] = []
+    for tag in add:
+        if tag.lower() in surviving_lower:
+            continue
+        new_names.append(tag)
+        surviving_lower.add(tag.lower())
+        added.append(tag)
+
+    return new_names, added, removed
+
+
+def _canonicalize_authors(values: object) -> list[str]:
+    """Strip, dedupe (case-insensitive), and validate the authors input list.
+
+    Returns the canonical author list. Empty list is allowed (clears the
+    author block); empty or whitespace-only individual entries raise
+    ``ValidationError``.
+    """
+    if not isinstance(values, list):
+        raise ValidationError("authors must be a list of strings")
+    canonical: list[str] = []
+    seen_lower: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            raise ValidationError(
+                f"authors entries must be strings; got {type(raw).__name__}"
+            )
+        stripped = raw.strip()
+        if not stripped:
+            raise ValidationError(
+                "authors contains an empty or whitespace-only entry"
+            )
+        lower = stripped.lower()
+        if lower in seen_lower:
+            continue
+        seen_lower.add(lower)
+        canonical.append(stripped)
+    return canonical
+
+
 def move_record(
     cache: RemarkableCache,
     base_path: Path,
